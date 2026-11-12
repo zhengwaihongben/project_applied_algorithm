@@ -15,6 +15,12 @@ def test_rtm_hourly_averages_four_intervals_into_hour_ending():
     assert out.loc[0, "rtm"] == 2.5
 
 
+def test_rtm_hourly_ignores_exact_duplicate_intervals():
+    rtm = _rtm("2024-01-01 00:15", 4, [1.0, 2.0, 3.0, 4.0])
+    out = rtm_hourly(pd.concat([rtm, rtm.tail(1)], ignore_index=True))   # ERCOT sometimes repeats an interval
+    assert out.loc[0, "rtm"] == 2.5
+
+
 def test_dst_fall_back_day_has_25_hours_on_one_delivery_date():
     rtm = _rtm("2025-11-02 00:15", 100, [10.0] * 100)
     hours = rtm["interval_ending"].dt.ceil("h").drop_duplicates().reset_index(drop=True)

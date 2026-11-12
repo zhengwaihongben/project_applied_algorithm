@@ -19,7 +19,12 @@ def _read(files):
 
 
 def rtm_hourly(rtm):
-    """Average the four 15-minute RT prices into the hour they end in."""
+    """Average the four 15-minute RT prices into the hour they end in.
+
+    ERCOT occasionally repeats an interval (identical rows) or misses one; repeats are dropped,
+    and an hour with a missing interval is averaged over the intervals it has.
+    """
+    rtm = rtm.drop_duplicates(["settlement_point", "interval_ending"])
     rtm = rtm.assign(hour_ending=rtm["interval_ending"].dt.ceil("h"))
     out = rtm.groupby(["hour_ending", "settlement_point"], as_index=False)["price"].mean()
     return out.rename(columns={"settlement_point": "point", "price": "rtm"})
