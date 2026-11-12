@@ -1590,6 +1590,23 @@ Do this only after Task 12 runs. Spec §5.2. This task is deliberately written a
 
 ---
 
+### Task 13c (stretch): Market PTP volume and price-impact check
+
+Do this only after Task 12 runs. Spec §5.3. Written at design level because the field names of this endpoint haven't been checked yet.
+
+**Files:** Create `src/ptp_volume.py`, `tests/test_ptp_volume.py`. Modify `src/run_backtest.py`.
+
+- [ ] **Step 1: Probe the endpoint.** Call `fetch(auth, "/np4-194-cd/dam_ptp_obligation_sp_results", {"deliveryDateFrom": "2024-06-02", "deliveryDateTo": "2024-06-02"})` from `data_import` once. Note the field names (settlement point, hour, MW; whether the MW is per source or sink side) and whether there's a posting timestamp. Write them down at the top of `src/ptp_volume.py`.
+- [ ] **Step 2: Downloader.** Same pattern as `data_import.download_all`: monthly files `data/raw/PTP/PTP_hubs_YYYY-MM.csv`, one request per hub, `with_retry`, never save a month with a missing hub. Add `data/raw/PTP/` to `.gitignore` and `RAW_PTP` to `config.py`.
+- [ ] **Step 3: Test first** for `impact_share(log, volume)`: given a trade log row (pair, delivery_date, hour, mw) and the awarded MW at its source and sink for that hour, it returns `mw / min(source_mw, sink_mw)`. Use a 2-row example whose shares you compute by hand.
+- [ ] **Step 4: Implement** `impact_share` and add to `run_backtest.py` (main model, test periods): the median and 95th percentile of the share go into `metrics.json` under `"price_impact"`.
+- [ ] **Step 5:** `uv run pytest -v`, rerun `run_backtest.py`. If the 95th percentile is above 5%, update the spec's §9.6 wording from "assumed negligible" to the measured number.
+- [ ] **Step 6: Commit:** `git commit -m "feat: market PTP volume and price-impact check"`
+
+The crowding signal (spec §5.3, point 2) is not planned; design it after this task if time remains.
+
+---
+
 ### Task 14: Deliverable notebook
 
 **Files:** Create `notebooks/ptp_strategy.ipynb`.

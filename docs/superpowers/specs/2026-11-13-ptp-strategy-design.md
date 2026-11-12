@@ -90,6 +90,15 @@ Simpler strategies that use the same trade, risk and evaluation engine. Each pro
 - confirm the current API and the weights licence (non-commercial university use);
 - time it on CPU; the hosted mode sends data to Prior Labs and needs an account (public ERCOT data only).
 
+### 5.3 Market PTP volume (stretch: after the main comparison runs end to end)
+
+Download the MW of PTP Obligations awarded at each hub in every auction, from **DAM PTP Obligation Results by Settlement Point** (`/np4-194-cd/dam_ptp_obligation_sp_results`), for the same period and hubs, using the same `fetch` and retry code. Two uses, in this order:
+
+1. **Price-impact check (limitation §9.6).** For each traded pair and hour, compare our cleared MW with the MW the market was awarded at the source and sink hubs. Report the median and the 95th percentile of our share. If our share is regularly above ~5%, the "negligible price impact" assumption is wrong and must be stated as a risk.
+2. **Crowding signal (only if time remains).** Does a large awarded volume into a sink on T−1 predict the auction's error on T? Check the timing before using it: confirm from the API's posting times that T−1's awards are public before 10:00 on T−1. If they aren't, use T−2's awards.
+
+The publication timing of this dataset is unverified; check it before relying on it.
+
 Thresholds for S3 come from 2024 only. Each alternative is reported with the same metrics as §8. With the deadline, S1 and S2 (a few lines each) are realistic; S3 and S4 only if time allows.
 
 ## 6. From forecast to trade
