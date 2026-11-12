@@ -136,6 +136,8 @@ git commit -m "chore: config, dependencies, test tooling, ERCOT API spec"
 
 ### Task 1: Price download, 2023-01 → 2026-10
 
+> **Done, with a fix after the first real run:** the API's `settlementPoint` filter takes one value, so a 5-hub request returned empty months, and ERCOT rate-limited the requests (HTTP 429). The committed `src/data_import.py` fetches one hub per request (`fetch_month`), refuses to save a month with a missing hub, and retries on 429 (`with_retry`). The code below is the first version; the repo is authoritative.
+
 **Files:** Rewrite `src/data_import.py`. Test: `tests/test_data_import.py`.
 
 - [ ] **Step 1: Failing test**
@@ -529,7 +531,7 @@ from ercot.auth import ErcotAuth
 from ercot.models import BASE_URL
 
 from config import DOWNLOAD_START, END, RAW_COV
-from data_import import month_ranges
+from data_import import month_ranges, with_retry
 
 ENDPOINTS = {
     "WIND": "/np4-742-cd/wpp_hrly_actual_fcast_geo",
@@ -591,7 +593,7 @@ def download_covariates():
                 continue
             parts = []
             for day in pd.date_range(first, last):
-                raw = fetch(auth, path, _params(day))
+                raw = with_retry(lambda: fetch(auth, path, _params(day)))   # ERCOT rate-limits (HTTP 429)
                 if name == "LOAD" and not raw.empty:
                     raw = raw[_in_use(raw)]
                 parts.append(pick_vintage(raw, day))
