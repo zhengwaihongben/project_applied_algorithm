@@ -136,7 +136,11 @@ git commit -m "chore: config, dependencies, test tooling, ERCOT API spec"
 
 ### Task 1: Price download, 2023-01 → 2026-10
 
-> **Done, with a fix after the first real run:** the API's `settlementPoint` filter takes one value, so a 5-hub request returned empty months, and ERCOT rate-limited the requests (HTTP 429). The committed `src/data_import.py` fetches one hub per request (`fetch_month`), refuses to save a month with a missing hub, and retries on 429 (`with_retry`). The code below is the first version; the repo is authoritative.
+> **Done, with fixes after the first real runs; the repo is authoritative, the code below is the first version.**
+> 1. The API's `settlementPoint` filter takes one value, so a 5-hub request returned empty months: now one hub per request (`fetch_month`), and a month with a missing hub is never saved.
+> 2. ERCOT rate-limits (HTTP 429): `with_retry`.
+> 3. `er.dam`/`er.rtm` guess column meanings and mislabel the RTM hour/interval columns: we now call the API directly via `fetch`, which reads the named fields, and build `interval_ending` ourselves (`to_long_dam`, `to_long_rtm`).
+> 4. The API has no data before mid-December 2023: `DOWNLOAD_START = "2023-12-01"`.
 
 **Files:** Rewrite `src/data_import.py`. Test: `tests/test_data_import.py`.
 
@@ -531,7 +535,7 @@ from ercot.auth import ErcotAuth
 from ercot.models import BASE_URL
 
 from config import DOWNLOAD_START, END, RAW_COV
-from data_import import month_ranges, with_retry
+from data_import import fetch, month_ranges, with_retry   # fetch reads the API's named fields
 
 ENDPOINTS = {
     "WIND": "/np4-742-cd/wpp_hrly_actual_fcast_geo",
@@ -543,20 +547,6 @@ LOOKBACK = pd.Timedelta(hours=48)
 
 def _auth():
     return ErcotAuth(os.environ["ERCOT_USERNAME"], os.environ["ERCOT_PASSWORD"], os.environ["ERCOT_SUBSCRIPTION_KEY"])
-
-
-def fetch(auth, path, params):
-    rows, page = [], 1
-    while True:
-        r = requests.get(BASE_URL + path, headers=auth.get_headers(),
-                         params={**params, "size": 100_000, "page": page}, timeout=120)
-        r.raise_for_status()
-        payload = r.json()
-        fields = [f["name"] for f in payload["fields"]]
-        rows += payload.get("data") or []
-        if page >= payload["_meta"]["totalPages"]:
-            return pd.DataFrame(rows, columns=fields)
-        page += 1
 
 
 def pick_vintage(df, delivery_date):
