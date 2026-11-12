@@ -48,7 +48,7 @@ Downloaded directly from the ERCOT Public API, because the `ercot` package doesn
 | Wind forecast | `/np4-742-cd/wpp_hrly_actual_fcast_geo` | Short-term wind power forecast (STWPF) for **West** and **Panhandle** |
 | Load forecast | `/np3-565-cd/lf_by_model_weather_zone`, rows where `inUseFlag` is true | **north, northCentral, farWest, coast** (Houston), **southCentral, southern** (South hub) |
 
-**Version rule.** The covariate value for any hour on delivery day D is taken from the forecast **published between 09:00 and 10:00 on D−1** (`postedDatetimeFrom/To`). If none was published in that window, use the latest version published before 10:00 on D−1. If nothing was published in the 48 hours before 10:00 on D−1, the day's covariates are missing and **no trades are made for day D**.
+**Version rule.** The covariate value for any hour on delivery day D is taken from the **latest forecast published before 10:00 on D−1** (normally the 09:xx version). We look back at most 48 hours, using `postedDatetimeFrom/To`, so one request per day covers both the normal case and the fallback. If nothing was published in those 48 hours, the day's covariates are missing and **no trades are made for day D** for the covariate models.
 
 The rule applies to past and future hours alike, so the model always sees "the forecast as it stood the day before", never actual values. At bid time it gives us T−1 values (published on T−2) and T values (published on T−1 before 10:00); both are known.
 
@@ -62,29 +62,42 @@ CSV only; about 1.3M rows in total, so no database. Raw monthly files and `data/
 
 ## 5. Forecast models
 
-All models output quantiles of `error` for each pair and hour of day T: at least the 10th, 30th, 50th, 70th and 90th percentiles.
+All models output the 10th, 20th, …, 90th percentiles of `error` (`q10` … `q90`) for each pair and hour of day T. The full set is needed so α ∈ {0.6, 0.7, 0.8} can be tuned. Gaps in the history are forward-filled before reaching Chronos-2, which needs a regular hourly grid.
 
 | Model | Description |
 |---|---|
-| **Chronos-2 + covariates** (main) | `amazon/chronos-2`, zero-shot (no fine-tuning), on CPU. One hourly `error` series per pair. History through the end of T−2, up to 8,192 hours, **clipped at ±$500** (scoring and PnL use the unclipped values). Covariates: calendar, wind, load (§4). Horizon 48 hours from the end of T−2; keep the last 24 (day T). One forecast per pair per delivery day |
+| **Chronos-2 + covariates** (main) | `amazon/chronos-2`, zero-shot (no fine-tuning), on CPU. One hourly `error` series per pair. History through the end of T−2, up to 8,192 hours, **clipped at ±$500** (scoring and PnL use the unclipped values). Covariates: calendar, wind, load (§4). The model runs on a regular UTC hourly grid; the horizon is 49 hours from the end of T−2, and we keep the hours that belong to day T in local time (23, 24 or 25 on DST days). One forecast per pair per delivery day |
 | **Chronos-2, no wind/load** | Same, with calendar covariates only. This isolates whether the fundamentals add anything |
 | **Hour × month baseline** | Empirical quantiles of `error` by pair, hour of day and month, from 2024. Used for every period (in-sample in 2024) |
 | **Zero** | The auction is right: no trades. Reference for forecast accuracy only |
 
 Out of scope: fine-tuning, ridge regression or other learned models, combining models, binding transmission constraints (shadow prices), outages.
 
+### 5.1 Alternative signals (stretch: only after the main comparison runs end to end)
+
+Simpler strategies that use the same trade, risk and evaluation engine. Each produces a direction and a size for each pair and hour, instead of quantiles. They test whether the foundation model is needed at all, and each is a plain rule that fits on one slide. In priority order:
+
+| # | Signal | Rule (known at 10:00 on T−1) | Idea it tests |
+|---|---|---|---|
+| S1 | **Persistence** | Trade in the direction of the auction's error for the same pair and hour on T−2, if its absolute value is > $5. Flat 10 MW | "The auction repeats yesterday's mistake" |
+| S2 | **Calendar premium** | Trade the hour × month baseline's median direction whenever its absolute value is > $5, with no forecast. Flat 10 MW | Is there a steady risk premium we can collect without forecasting? |
+| S3 | **Fundamentals rule** | West→North only: source→sink when T's West wind forecast is above its 2024 80th percentile **and** North Central load forecast is above its 2024 50th percentile; reverse when wind is below its 20th percentile. Flat 10 MW | The deck's story as a transparent rule: "lots of wind plus high Dallas demand means congestion" |
+| S4 | **Forecast congestion, not the error** | Chronos-2 forecasts `rt_gap` (same inputs); trade if its median minus T−1's DA gap is beyond ±$5 | The approach we rejected (option 2 in the brainstorm), kept as a direct comparison |
+
+Thresholds for S3 come from 2024 only. Each alternative is reported with the same metrics as §8. With the deadline, S1 and S2 (a few lines each) are realistic; S3 and S4 only if time allows.
+
 ## 6. From forecast to trade
 
 Rules applied identically to every model, per pair and hour of T:
 
-1. **Gate and direction.** With threshold $5 and confidence level α (default 0.70; chosen from {0.6, 0.7, 0.8} on **2024 only**):
+1. **Gate and direction.** With threshold $5 and confidence level α (default 0.70; chosen from {0.6, 0.7, 0.8} as the value with the highest **2024** Sharpe, ties going to the fewest trades):
    - source→sink if the (1−α) quantile > +$5;
    - sink→source if the α quantile < −$5;
    - otherwise no bid.
 2. **Bid price.** $25 cap on our path, as on the slides. The bid clears if `direction × da_gap ≤ 25`.
-3. **Size.** Half-Kelly per hour: `mw = 0.5 × capital × |q50| / σ²`, with `σ = (q90 − q10) / 2.563`. Then capped at **10 MW/hour**.
+3. **Size.** Half-Kelly per hour: `mw = 0.5 × capital × |q50| / σ²`, with `σ = max((q90 − q10) / 2.563, $1)`. The $1 floor avoids division by zero when the range collapses; the 2.563 factor assumes a normal shape, which understates the real tails. Then capped at **10 MW/hour**.
 4. **Daily budget.** At most **40 MW per delivery day across all pairs and hours**, spent on the largest `|q50|` first. Decided before the auction.
-5. **PnL** per cleared hour: `mw × (direction × error − 0.50)`, where $0.50/MWh is the transaction cost.
+5. **PnL** per cleared hour: `mw × (direction × error − cost)`. The base `cost` is $0.50/MWh, an **assumed** broker (QSE) fee; real QSE fees are negotiated privately. There's no bid-ask spread: everyone in the auction gets the same clearing price.
 
 ## 7. Risk rules
 
@@ -105,6 +118,10 @@ They use only PnL settled by bid time, meaning delivery days up to T−2.
 
 **Trading.** For each model, on 2024 (labelled in-sample), Test A and Test B: total PnL, return %, number of trades, win rate, average win, average loss, win/loss ratio, max drawdown, Sharpe (daily, annualized with √365).
 
+**Is it more than luck?** A 95% confidence interval for mean daily PnL and Sharpe, from a block bootstrap of daily PnL (7-day blocks, because consecutive days are correlated). If the interval contains zero, we say the result isn't distinguishable from luck.
+
+**Cost sensitivity.** Rerun the main model at a cost of $0, $0.50, $1 and $2/MWh, and report the **breakeven cost**: the cost at which Test A + B PnL reaches zero. Slide line: "the edge survives fees up to $X/MWh".
+
 **Required honesty checks:**
 - An automated test that no covariate value published after 10:00 on T−1 reaches a forecast for day T.
 - Existing look-ahead tests for prices and risk state.
@@ -124,6 +141,11 @@ They use only PnL settled by bid time, meaning delivery days up to T−2.
 3. **Covariates suit West→North.** The wind and load inputs were chosen with West→North in mind; other pairs get the same inputs.
 4. **Unknown auction price at bid time.** We don't know tomorrow's day-ahead gap at 10:00, so the gate works on the forecast error alone, and the $25 cap is the only price protection.
 5. **Half-Kelly rarely binds.** With $1M of capital the 10 MW cap usually decides the size.
+6. **Costs not modelled.**
+   - Collateral: ERCOT requires collateral for PTP positions. We assume the $1M covers it; the formula is not modelled.
+   - Uplift: we haven't confirmed whether any ERCOT balancing or uplift charges fall on purely financial PTP holders.
+   - Price impact: assumed negligible at 10 MW at a hub. Untested.
+7. **Future rule change.** ERCOT's NPRR1343 (posted June 2026, status "Pending" as of November 2026) proposes a fee per "inefficient" hourly PTP bid in the DAM, amount not stated on the issue page. It doesn't affect the 2024–2026 backtest. If adopted, bids capped at $25 that often don't clear could become costly.
 
 ## 10. Differences from the current deck
 
@@ -137,7 +159,7 @@ The slides need updating for:
 
 ## 11. Implementation notes
 
-- Python 3.13, uv, pandas. New dependencies: `chronos-forecasting` (with CPU PyTorch) and matplotlib. Confirm the package name and the Chronos-2 API (covariate input format) from the official repository, `amazon-science/chronos-forecasting`, before coding.
+- Python 3.13, uv, pandas. New dependencies: `chronos-forecasting` (with CPU PyTorch) and matplotlib. The Chronos-2 call, per the official README, is `Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map="cpu").predict_df(context_df, future_df=..., prediction_length=..., quantile_levels=..., id_column=..., timestamp_column=..., target=...)`. Quantile columns come back named `"0.1"`, `"0.2"`, and so on.
 - Credentials come from the environment (`ERCOT_USERNAME`, `ERCOT_PASSWORD`, `ERCOT_SUBSCRIPTION_KEY`) and are never written to disk. Call `er.configure(..., save=False)`. For direct API calls, the ID token expires after 1 hour, so long downloads must log in again.
 - Existing plan `docs/superpowers/plans/2026-11-13-ptp-backtest-v1.md`:
   - Tasks 0–4 (setup, price download, processing, gaps, pair screen) and 7–8 (risk, backtest, metrics) stay, with `START` moved to 2023-01-01 for downloads.
