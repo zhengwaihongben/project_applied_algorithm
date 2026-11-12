@@ -6,9 +6,10 @@ from pathlib import Path
 # ==========================================
 # 1. 設定你的 API 憑證
 # ==========================================
-USERNAME = "..."
-PASSWORD = "..."
-SUBSCRIPTION_KEY = "..."
+# 從環境變數讀取，切勿把真實帳密寫進程式碼或 commit
+USERNAME = os.environ["ERCOT_USERNAME"]
+PASSWORD = os.environ["ERCOT_PASSWORD"]
+SUBSCRIPTION_KEY = os.environ["ERCOT_SUBSCRIPTION_KEY"]
 
 # 初始化連線 (只需執行一次，憑證會存到本機)
 er.configure(USERNAME, PASSWORD, SUBSCRIPTION_KEY)

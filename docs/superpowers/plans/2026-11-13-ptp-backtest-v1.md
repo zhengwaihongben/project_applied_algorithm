@@ -1582,6 +1582,22 @@ git commit -m "feat: persistence and calendar-premium alternative signals"
 
 ---
 
+### Task 13b (stretch): TabPFN-TS as a second foundation model
+
+Do this only after Task 12 runs. Spec §5.2. This task is deliberately written at design level: the `tabpfn-time-series` API changed in 2026 (v1.1, then v1.3), so take its exact calls from the README at implementation time rather than from this plan.
+
+**Files:** Create `src/tabpfn_model.py`, `tests/test_tabpfn_model.py`. Modify `src/run_backtest.py` (add `"tabpfn_cov": load_forecasts("tabpfn_cov")` to `models`).
+
+- [ ] **Step 1:** Read the `PriorLabs/tabpfn-time-series` README. Note: the install command, the predictor class, how known future covariates are passed (`future_df` or equivalent), how quantiles are requested, and the weights licence. Stop and ask the team if the licence doesn't allow university use.
+- [ ] **Step 2:** `uv add tabpfn-time-series`.
+- [ ] **Step 3: Tests first.** Copy the three tests from `tests/test_chronos_model.py` into `tests/test_tabpfn_model.py`, with a fake TabPFN predictor that returns 1.0 for every quantile. The look-ahead, missing-covariate and clipping tests must hold unchanged.
+- [ ] **Step 4:** Write `src/tabpfn_model.py`, reusing `chronos_model.build_frame`, `origin` and the per-month caching loop. Only the predict call and the mapping of its quantile columns to `q10`…`q90` differ. Save as `output/forecasts/tabpfn_cov_YYYY-MM.csv`, so `chronos_model.load_forecasts("tabpfn_cov")` loads it.
+- [ ] **Step 5:** Time one month as in Task 8 Step 4. If it's over ~30 s/day on CPU, either reduce context or skip the model; report which.
+- [ ] **Step 6:** Run the full months, add the model to `run_backtest.py`, rerun it, then `uv run pytest -v`.
+- [ ] **Step 7: Commit:** `git commit -m "feat: TabPFN-TS forecasts as second foundation model"`
+
+---
+
 ### Task 14: Deliverable notebook
 
 **Files:** Create `notebooks/ptp_strategy.ipynb`.

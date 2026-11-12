@@ -84,6 +84,12 @@ Simpler strategies that use the same trade, risk and evaluation engine. Each pro
 | S3 | **Fundamentals rule** | West→North only: source→sink when T's West wind forecast is above its 2024 80th percentile **and** North Central load forecast is above its 2024 50th percentile; reverse when wind is below its 20th percentile. Flat 10 MW | The deck's story as a transparent rule: "lots of wind plus high Dallas demand means congestion" |
 | S4 | **Forecast congestion, not the error** | Chronos-2 forecasts `rt_gap` (same inputs); trade if its median minus T−1's DA gap is beyond ±$5 | The approach we rejected (option 2 in the brainstorm), kept as a direct comparison |
 
+### 5.2 Second foundation model (stretch: after the main comparison runs end to end)
+
+**TabPFN-TS** (Prior Labs, `tabpfn-time-series`) treats forecasting as tabular regression with known future inputs, the same setup as our wind/load inputs. Prior Labs reports it as the best model on benchmark tasks with known future covariates, with the largest gains on temperature-driven load forecasting. That's a vendor benchmark. Same inputs, same timing rules and the same `q10`…`q90` output as Chronos-2, so it plugs into §6–8 unchanged as model `tabpfn_cov`. Before building it:
+- confirm the current API and the weights licence (non-commercial university use);
+- time it on CPU; the hosted mode sends data to Prior Labs and needs an account (public ERCOT data only).
+
 Thresholds for S3 come from 2024 only. Each alternative is reported with the same metrics as §8. With the deadline, S1 and S2 (a few lines each) are realistic; S3 and S4 only if time allows.
 
 ## 6. From forecast to trade
