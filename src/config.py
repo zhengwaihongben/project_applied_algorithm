@@ -11,7 +11,7 @@ FORECASTS = OUTPUT / "forecasts"
 
 HUBS = ["HB_WEST", "HB_NORTH", "HB_SOUTH", "HB_HOUSTON", "HB_PAN"]  # HB_BUSAVG excluded: average of the others
 
-DOWNLOAD_START = "2023-01-01"   # 2023 = model context only
+DOWNLOAD_START = "2023-12-01"   # ERCOT API search only goes back to 2023-11-30; Dec 2023 = model context only
 TRAIN_START, TRAIN_END = "2024-01-01", "2024-12-31"
 PERIODS = {                      # name -> (start, end), delivery dates inclusive
     "train": (TRAIN_START, TRAIN_END),

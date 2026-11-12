@@ -28,7 +28,7 @@ Nothing published later may reach a model, the gate or sizing.
 | Item | Value |
 |---|---|
 | Capital | $1,000,000 |
-| Data download | 2023-01-01 → 2026-10-31 (2023 is model context only) |
+| Data download | 2023-12-01 → 2026-10-31 (December 2023 is model context only). ERCOT's API search only goes back to 30 November 2023; older data exists only as archive or yearly files |
 | Tuning (in-sample) | 2024-01-01 → 2024-12-31 |
 | Test A | 2025-01-01 → 2025-12-04 |
 | Test B (after RTC+B) | 2025-12-05 → 2026-10-31. ERCOT launched Real-Time Co-optimization plus Batteries on 5 December 2025, which may change real-time price behaviour |
@@ -151,7 +151,8 @@ They use only PnL settled by bid time, meaning delivery days up to T−2.
    - Collateral: ERCOT requires collateral for PTP positions. We assume the $1M covers it; the formula is not modelled.
    - Uplift: we haven't confirmed whether any ERCOT balancing or uplift charges fall on purely financial PTP holders.
    - Price impact: assumed negligible at 10 MW at a hub. Untested.
-7. **Future rule change.** ERCOT's NPRR1343 (posted June 2026, status "Pending" as of November 2026) proposes a fee per "inefficient" hourly PTP bid in the DAM, amount not stated on the issue page. It doesn't affect the 2024–2026 backtest. If adopted, bids capped at $25 that often don't clear could become costly.
+7. **Short history in early 2024.** API data starts in December 2023, so Chronos-2 has only about a month of history for its first 2024 forecasts. Early-2024 forecasts are weaker; this mainly affects the tuning period, not the test periods.
+8. **Future rule change.** ERCOT's NPRR1343 (posted June 2026, status "Pending" as of November 2026) proposes a fee per "inefficient" hourly PTP bid in the DAM, amount not stated on the issue page. It doesn't affect the 2024–2026 backtest. If adopted, bids capped at $25 that often don't clear could become costly.
 
 ## 10. Differences from the current deck
 

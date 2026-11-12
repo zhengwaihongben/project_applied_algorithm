@@ -59,7 +59,7 @@ All steps resume after interruption. Constants live in `src/config.py`.
 
 | Step | Command | Output | Time |
 |---|---|---|---|
-| Prices, 2023-01 → 2026-10, 5 hubs | `uv run python src/data_import.py` | `data/raw/{DAM,RTM}/*_hubs_YYYY-MM.csv` | long |
+| Prices, 2023-12 → 2026-10, 5 hubs (the API has nothing before 2023-11-30) | `uv run python src/data_import.py` | `data/raw/{DAM,RTM}/*_hubs_YYYY-MM.csv` | long |
 | Hourly prices | `uv run python src/processing.py` | `data/processed/hourly_prices.csv` | minutes |
 | Pair screen (2024) | `uv run python src/screen.py`, then set `PAIRS` in `config.py` | `output/pair_screen.csv` | seconds |
 | Wind/load forecasts | `uv run python src/covariates.py probe 2024-06-02`, then `uv run python src/covariates.py`, then `... build` | `data/raw/COV/`, `data/processed/covariates.csv` | hours |
