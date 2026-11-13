@@ -6,7 +6,7 @@ We trade **Point-to-Point (PTP) Obligations** in ERCOT's Day-Ahead Market: a cas
 
 - **Design (rules, data, models, evaluation):** [`docs/superpowers/specs/2026-11-13-ptp-strategy-design.md`](docs/superpowers/specs/2026-11-13-ptp-strategy-design.md)
 - **Implementation plan (task by task):** [`docs/superpowers/plans/2026-11-13-ptp-backtest-v1.md`](docs/superpowers/plans/2026-11-13-ptp-backtest-v1.md)
-- **Pitch deck:** `texas_congestion_pitch.pptx`
+- **Pitch deck:** `resources/texas_congestion_pitch.pptx`
 - **Final deliverable:** `notebooks/ptp_strategy.ipynb` (built in plan Task 14)
 
 ## Status
@@ -76,18 +76,19 @@ Only steps 1 and the tests exist so far; the rest are built following the plan.
 ```
 src/            pipeline modules (one responsibility each; see the plan)
 tests/          pytest tests, one file per module
-docs/           design spec, implementation plan, ERCOT OpenAPI spec (ercot_pubapi.yaml)
+docs/           design spec, implementation plan, forecasting approaches, project notes
+resources/      pitch deck, project brief, ERCOT OpenAPI spec, market data workbook
 data/raw/       downloads (gitignored, regenerate with the scripts)
 data/processed/ cleaned tables (gitignored)
 output/         results that go into the deck and notebook
 notebooks/      the deliverable notebook
 ```
 
-`src/data_ingestion.py` and `data_loading.md` describe the earlier manual workflow (renaming files downloaded from the ERCOT portal by hand). The API scripts above replace it.
+`src/data_processing.py` and `docs/data_pipeline.md` are Ben's first pipeline (HB_WEST/HB_NORTH, Jan–May 2026).
 
 ## Data sources
 
-- ERCOT Public API (`https://api.ercot.com/api/public-reports`), via the [`ercot`](https://pypi.org/project/ercot/) Python package and direct calls. Full API description: `docs/ercot_pubapi.yaml`.
+- ERCOT Public API (`https://api.ercot.com/api/public-reports`), via the [`ercot`](https://pypi.org/project/ercot/) Python package and direct calls. Full API description: `resources/ercot_pubapi.yaml`.
   - DAM Settlement Point Prices (NP4-190-CD)
   - RTM Settlement Point Prices (NP6-905-CD)
   - Wind Power Production, Hourly Averaged Actual and Forecasted Values by Geographical Region (NP4-742-CD)

@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-University group project (Applied Algorithmic Trading): trade ERCOT (Texas grid) congestion via **PTP Obligations**, source `HB_WEST` → sink `HB_NORTH`. Predict tomorrow's Real-Time (RTM) spread, compare with the Day-Ahead (DAM) spread, trade when the edge is large enough, then backtest. Deliverables are a deck (`texas_congestion_pitch.pptx`) and commented code (ideally a Jupyter notebook) emailed to the professor.
+University group project (Applied Algorithmic Trading): trade ERCOT (Texas grid) congestion via **PTP Obligations**, source `HB_WEST` → sink `HB_NORTH`. Predict tomorrow's Real-Time (RTM) spread, compare with the Day-Ahead (DAM) spread, trade when the edge is large enough, then backtest. Deliverables are a deck (`resources/texas_congestion_pitch.pptx`) and commented code (ideally a Jupyter notebook) emailed to the professor.
 
 Key docs (read before changing strategy or data code):
-- `project_idea.md`: strategy outline (features: historical congestion, West wind forecast, North load forecast, line outages).
+- `docs/project_idea.md`: strategy outline (features: historical congestion, West wind forecast, North load forecast, line outages).
 - `data_loading.md`: workflow checklist (in Chinese) with the **concrete strategy rules**, and ERCOT data portal instructions plus column schemas.
 
 Strategy rules from `data_loading.md` (the grading requires code to match the slides exactly):
@@ -39,4 +39,4 @@ Gotchas:
 
 ## ERCOT Public API
 
-`docs/ercot_pubapi.yaml` is the full OpenAPI spec (base URL `https://api.ercot.com/api/public-reports`, about 245 report endpoints). Subscription-key examples in it are redacted. Useful endpoints: `/np4-190-cd/dam_stlmnt_pnt_prices` (DAM prices), `/np6-905-cd/spp_node_zone_hub` (RTM 15-minute prices). Each request needs an `Ocp-Apim-Subscription-Key` header and a Bearer ID token; the token comes from ERCOT's B2C ROPC login and expires after 1 hour with no refresh, so long downloads must re-authenticate.
+`resources/ercot_pubapi.yaml` is the full OpenAPI spec (base URL `https://api.ercot.com/api/public-reports`, about 245 report endpoints). Subscription-key examples in it are redacted. Useful endpoints: `/np4-190-cd/dam_stlmnt_pnt_prices` (DAM prices), `/np6-905-cd/spp_node_zone_hub` (RTM 15-minute prices). Each request needs an `Ocp-Apim-Subscription-Key` header and a Bearer ID token; the token comes from ERCOT's B2C ROPC login and expires after 1 hour with no refresh, so long downloads must re-authenticate.

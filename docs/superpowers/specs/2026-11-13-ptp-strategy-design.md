@@ -41,7 +41,7 @@ Nothing published later may reach a model, the gate or sizing.
 DAM and RTM settlement point prices for the 5 hubs, from the `ercot` package (`er.dam`, `er.rtm`, long format, timezone-aware `interval_ending`). One CSV per month and market; downloads can resume.
 
 ### 4.2 Forecasts (covariates)
-Downloaded directly from the ERCOT Public API, because the `ercot` package doesn't expose the publication-time filter. Spec file: `docs/ercot_pubapi.yaml`.
+Downloaded directly from the ERCOT Public API, because the `ercot` package doesn't expose the publication-time filter. Spec file: `resources/ercot_pubapi.yaml`.
 
 | Covariate | Endpoint | Fields |
 |---|---|---|
