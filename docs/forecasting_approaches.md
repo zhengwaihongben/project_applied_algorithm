@@ -6,11 +6,15 @@ Every approach below answers one question: **for each pair and hour of day T, wh
 
 All approaches use the same trading rules, risk rules and backtest, so their results can be compared directly. Details are in the [spec](superpowers/specs/2026-11-13-ptp-strategy-design.md).
 
-## 1. Foundation model forecasts the auction's error (main approach)
+## 1. Foundation models forecast the auction's error (main approach)
 
-Chronos-2 (Amazon's time-series foundation model, zero-shot with no training) forecasts tomorrow's `error` per pair and hour, as quantiles q10…q90.
+A time-series foundation model, used zero-shot with no training, forecasts tomorrow's `error` per pair and hour, as quantiles q10…q90.
 Inputs: the error history, the calendar, and ERCOT's wind forecast (West, Panhandle) and load forecast (by weather zone), always the version published before 10:00 on T−1.
 Trade when the forecast distribution is mostly above +$5 (go long) or mostly below −$5 (go short).
+
+Models (same inputs, same output, only the model changes):
+- **Chronos-2** (Amazon): main model.
+- **TabPFN-TS** (Prior Labs): treats forecasting as tabular regression with known future inputs, which fits our wind and load forecasts. Prior Labs claims it does best in that setting, but that's their own benchmark and hasn't been checked independently. Check its licence and CPU speed first.
 
 Variants we compare:
 - **with wind and load forecasts** vs **calendar only**: do the fundamentals add anything?
@@ -29,13 +33,7 @@ Variants we compare:
 Chronos-2 forecasts tomorrow's real-time gap `rt_gap` directly; we trade when it differs from the day-ahead gap by more than $5.
 This is the more intuitive framing ("predict congestion"). We expect it to do worse, because the auction already prices in most of the predictable congestion. Worth running as a direct comparison.
 
-## 4. A second foundation model: TabPFN-TS
-
-Prior Labs' TabPFN-TS treats forecasting as tabular regression with known future inputs, which matches our wind and load forecasts.
-Prior Labs claims it does best when future covariates are known (their own benchmark, not independently verified). Same inputs and outputs as Chronos-2, so it swaps in directly.
-Check the licence and CPU speed first.
-
-## 5. Use the market's own PTP bids
+## 4. Use the market's own PTP bids
 
 ERCOT publishes how many MW of PTP Obligations cleared at each hub in every auction.
 - **Price-impact check:** is our size small compared with the market? (A risk check, not a signal.)
@@ -50,4 +48,4 @@ Only if the approaches above are done and time remains:
 
 ## Order of work
 
-1 (main comparison) → 2a, 2b → 3, 2c → 4 → 5 → the ideas not in the spec yet.
+1 with Chronos-2 → 2a, 2b → 1 with TabPFN-TS → 3, 2c → 4 → the ideas not in the spec yet.
