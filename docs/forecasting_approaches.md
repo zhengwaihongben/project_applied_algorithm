@@ -1,8 +1,35 @@
 # Forecasting approaches
 
-The trade: a PTP Obligation from source hub to sink hub, bought in the day-ahead auction at 10:00 on T−1.
-Profit per MW per hour = `error = rt_gap − da_gap`, the real-time price gap minus the gap the auction priced in.
-Every approach below answers one question: **for each pair and hour of day T, which way will the auction be wrong, and how confident are we?**
+## What we forecast: the auction's "error"
+
+**The trade.** At 10:00 on T−1 we buy a PTP Obligation for one hour of day T, for example source WEST → sink NORTH.
+It settles in two legs:
+- we **pay** the day-ahead price gap: `da_gap = DA price at NORTH − DA price at WEST`, fixed in the auction;
+- we **receive** the real-time price gap: `rt_gap = RT price at NORTH − RT price at WEST`, from what actually happens on T (the hour's average of the four 15-minute prices).
+
+**Profit per MW for that hour:**
+
+```
+error = rt_gap − da_gap
+```
+
+**Why we call it the "error".** The day-ahead gap is the auction's forecast of congestion between the two hubs. The real-time gap is the congestion that actually happened. `error` is how wrong the auction was. If the auction were always right, `error` would average zero and nobody could make money.
+
+**Example (one hour, WEST → NORTH):**
+
+| | NORTH | WEST | Gap (NORTH − WEST) |
+|---|---|---|---|
+| Day-ahead | $40 | $25 | `da_gap` = $15 (we pay) |
+| Real-time | $60 | $20 | `rt_gap` = $40 (we receive) |
+
+`error` = $40 − $15 = **+$25/MWh**. With 10 MW that's $250 for the hour, minus about $0.50/MWh in costs.
+
+**Sign = direction.**
+- `error > 0`: congestion was worse than the auction expected, so buying source → sink makes money.
+- `error < 0`: congestion was milder than the auction expected (or reversed), so the opposite trade (NORTH → WEST) makes money.
+
+Every approach below answers one question: **for each pair and hour of day T, will `error` be clearly positive or clearly negative, and how sure are we?**
+We only trade when the forecast is confidently beyond ±$5. Below that, costs and noise eat the edge.
 
 All approaches use the same trading rules, risk rules and backtest, so their results can be compared directly. Details are in the [spec](superpowers/specs/2026-11-13-ptp-strategy-design.md).
 
