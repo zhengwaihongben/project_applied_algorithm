@@ -19,10 +19,10 @@ We trade **Point-to-Point (PTP) Obligations** in ERCOT's Day-Ahead Market: a cas
 
 ## Setup
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.13 (not 3.14: some forecasting packages don't support it yet) and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync                 # installs everything, including Chronos-2 and PyTorch (large download)
+uv sync                 # installs everything: Chronos-2, TimesFM, TabPFN-TS, PyTorch (large download)
 uv run pytest -v        # all tests should pass
 ```
 
@@ -53,6 +53,10 @@ Rules:
 - **Never** put credentials in code, in a committed file, or in a chat (including AI assistants). If a key leaks, regenerate it on your ERCOT profile page.
 - Older versions of `src/data_import.py` saved credentials in plain text to `~/.ercot/credentials.json`. If that file exists on your machine, delete it.
 
+### Prior Labs key (TabPFN-TS only)
+
+TabPFN-TS runs on Prior Labs' cloud. Create a free account at https://platform.priorlabs.ai, create an API key under **Account → API keys**, and add it as the environment variable `TABPFN_TOKEN` in the PyCharm run configuration of `src/compare_models.py`. Same rules as the ERCOT credentials: never in code, a committed file or a chat. The free tier allows 5M tokens per day and 20M per month, so run `uv run python src/compare_models.py tabpfn-cost` before a full run.
+
 ## Running the pipeline
 
 All steps resume after interruption. Constants live in `src/config.py`.
@@ -63,6 +67,7 @@ All steps resume after interruption. Constants live in `src/config.py`.
 | Hourly prices | `uv run python src/processing.py` | `data/processed/hourly_prices.csv` | minutes |
 | Pair screen (2024) | `uv run python src/screen.py`, then set `PAIRS` in `config.py` | `output/pair_screen.csv` | seconds |
 | Wind/load forecasts | `uv run python src/covariates.py probe 2024-06-02`, then `uv run python src/covariates.py`, then `... build` | `data/raw/COV/`, `data/processed/covariates.csv` | hours |
+| Model comparison on 2024 (price history only so far) | `uv run python src/compare_models.py <chronos\|timesfm\|tabpfn\|baseline\|zero>`, then `... score` | `output/forecasts/compare/`, `output/model_comparison_2024.csv` | Chronos-2 ~7 min on an M4 laptop CPU, baselines seconds |
 | Chronos-2 forecasts | `uv run python src/chronos_model.py chronos_cov` (and `chronos_nocov`) | `output/forecasts/` | 1–2 h each |
 | Backtest and metrics | `uv run python src/run_backtest.py` | `output/metrics.json`, trade logs, charts | minutes |
 | Story | open `notebooks/ptp_strategy.ipynb` | — | 1 min |
