@@ -53,20 +53,58 @@
 
 ## Importing Data
 
-By `src/data_imports.py`. It imports the data documents and save in `../data/raw/DAM` and `../data/raw/RTM` respectively.
+`src/data_import.py`. It imports the data documents and save in `../data/raw/DAM` and `../data/raw/RTM` respectively.
 
 ## Processing Data
 
-Two codes(under `src/`):
-1. `data_ingestion.py`: import and rename the data
+`src/data_processing.py`: process the data
 
-    Importing the data to `data/raw/DAM` and `data/raw/RTM` respectively. `DAM` is for Day-Ahead Market, from `DAM Settlement Point Prices`; `RTM` is for Day-Ahead Market, from `Historical RTM Load Zone and Hub Prices`.
+1. Load Raw Data from `data/raw/DAM/` and `data/raw/RTM/`
+2. Clean and Validate Data
+    - 
 
-    Rename the data to `DAM_date.csv` and `RTM_data.csv`(or `.xlsx`).
+### Workflow
 
-2. `data_processing.py`: process the data
+```txt
+          Raw DAM Data
+               |
+               v
+       DAM Data Processing
+               |
+               v
+       Clean DAM Hourly Data
+               |
+               |
+               |------------------|
+                                  |
+                                  v
+                           Data Integration
+                                  |
+                                  v
+                           Spread Calculation
+                                  |
+                                  v
+                           Processed Dataset
+                                  ^
+                                  |
+               |------------------|
+               |
+       Clean RTM Hourly Data
+               ^
+               |
+       RTM Data Processing
+               ^
+               |
+          Raw RTM Data
+```
 
-    Extracting desired columns, and settlement points: `HB_NORTH` and `HB_WEST`.
+## Subscription Key in Local
 
-    Save the processed data by new documents and save them in `data/processed/`.
+Local ERCOT credentials
 
+In powershell
+```powershell
+$env:ERCOT_USERNAME = "your_username"
+$env:ERCOT_PASSWORD = "your_password"
+$env:ERCOT_SUBSCRIPTION_KEY = "your_subscription_key"
+```
