@@ -62,7 +62,7 @@ CSV only; about 1.3M rows in total, so no database. Raw monthly files and `data/
 
 ## 5. Forecast models
 
-All models output the 10th, 20th, …, 90th percentiles of `error` (`q10` … `q90`) for each pair and hour of day T. The full set is needed so α ∈ {0.6, 0.7, 0.8} can be tuned. Gaps in the history are forward-filled before reaching Chronos-2, which needs a regular hourly grid.
+All models output the 10th, 20th, …, 90th percentiles of `error` (`q10` … `q90`) for each pair and hour of day T. The full set is needed so α ∈ {0.5, 0.6, 0.7} can be tuned (§6). Gaps in the history are forward-filled before reaching Chronos-2, which needs a regular hourly grid.
 
 | Model | Description |
 |---|---|
@@ -105,10 +105,16 @@ Thresholds for S3 come from 2024 only. Each alternative is reported with the sam
 
 Rules applied identically to every model, per pair and hour of T:
 
-1. **Gate and direction.** With threshold $5 and confidence level α (default 0.70; chosen from {0.6, 0.7, 0.8} as the value with the highest **2024** Sharpe, ties going to the fewest trades):
-   - source→sink if the (1−α) quantile > +$5;
-   - sink→source if the α quantile < −$5;
+1. **Gate and direction.** With edge threshold θ and confidence level α:
+   - source→sink if the (1−α) quantile > +θ;
+   - sink→source if the α quantile < −θ;
    - otherwise no bid.
+
+   θ and α are tuned **jointly on 2024 only** over the grid θ ∈ {$2, $3, $5} × α ∈ {0.5, 0.6, 0.7} (α = 0.5 means "the median is beyond θ"). Only settings with **at least 1,000 trades in 2024** (pair-hours, all pairs together) are eligible; among those, the highest 2024 Sharpe wins and ties go to the fewest trades. If no setting reaches 1,000 trades, the model doesn't trade and that is reported. The choice is then frozen and applied unchanged to Test A and Test B. Each model gets its own (θ, α).
+
+   *Why this grid (changed 2026-11-13).* The deck's original rule (θ = $5, α ∈ {0.6, 0.7, 0.8}) almost never fires: zero-shot Chronos-2 on price history alone traded 117 of 87,840 pair-hours in 2024 at θ = $5, α = 0.7, because its median is usually near zero and its q30–q70 band is about $3 wide. A 2024 sweep showed the edge sits at θ = $2–3 with the median (≈5,700–12,000 trades, about 60% hit rate, $0.6–1.0 per MWh after costs), while θ ≤ $1 loses money to costs. The floor stays at $2. That sweep was in-sample and counted hours as independent, so it only motivates the grid; the evidence is Test A/B with the block bootstrap (§8).
+
+   *Why the 1,000-trade floor (added 2026-11-13).* Without it, tuning picks flukes: on 2024, TimesFM's best Sharpe came from 30 trades and the baseline's from 139, both too few to tell skill from luck. Models also express confidence on different scales (TimesFM keeps its median closer to zero than Chronos-2), so a fixed dollar threshold alone doesn't give them comparable volume.
 2. **Bid price.** $25 cap on our path, as on the slides. The bid clears if `direction × da_gap ≤ 25`.
 3. **Size.** Half-Kelly per hour: `mw = 0.5 × capital × |q50| / σ²`, with `σ = max((q90 − q10) / 2.563, $1)`. The $1 floor avoids division by zero when the range collapses; the 2.563 factor assumes a normal shape, which understates the real tails. Then capped at **10 MW/hour**.
 4. **Daily budget.** At most **40 MW per delivery day across all pairs and hours**, spent on the largest `|q50|` first. Decided before the auction.
@@ -130,6 +136,8 @@ They use only PnL settled by bid time, meaning delivery days up to T−2.
 - mean absolute error of q50 vs the actual `error`;
 - coverage of the q10–q90 range (target 80%);
 - hit rate (sign correct) on hours that pass the gate.
+
+**Equal-volume comparison.** Because models scale their forecasts differently, also compare them at the same number of trades: for N ∈ {500, 2,000, 5,000} per period, trade 1 MW on each model's N hours with the largest |q50| in the direction of q50, after the base cost, with no sizing or risk rules. Report hit rate, PnL per trade and total PnL per model, with the block bootstrap interval on daily PnL. This answers "which model knows more", separately from how its threshold was tuned. On 2024 (price history only) Chronos-2 and TimesFM were close and both beat the hour-of-day baseline.
 
 **Trading.** For each model, on 2024 (labelled in-sample), Test A and Test B: total PnL, return %, number of trades, win rate, average win, average loss, win/loss ratio, max drawdown, Sharpe (daily, annualized with √365).
 
@@ -171,7 +179,8 @@ The slides need updating for:
 - forecasting the auction's error with Chronos-2;
 - the weather-filter proxy;
 - "yesterday's loss" meaning T−2;
-- the Test A/B split around RTC+B.
+- the Test A/B split around RTC+B;
+- the entry rule: the edge threshold and confidence level are tuned on 2024 from θ ∈ {$2, $3, $5} × α ∈ {0.5, 0.6, 0.7} instead of a fixed $5 (§6).
 
 ## 11. Implementation notes
 

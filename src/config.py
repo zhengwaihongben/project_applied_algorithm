@@ -35,8 +35,10 @@ CONTEXT_HOURS = 8192     # Chronos-2 max; lower it if Task 8 timing is too slow
 
 # Trading rules
 CAPITAL = 1_000_000.0
-EDGE_THRESHOLD = 5.0
-ALPHAS = [0.6, 0.7, 0.8]
+EDGE_THRESHOLD = 5.0     # deck's original rule; still used by the flat alternatives S1-S4 and quick model checks
+EDGE_THRESHOLDS = [2.0, 3.0, 5.0]   # tuned jointly with ALPHAS on 2024 only, then frozen (spec section 6)
+ALPHAS = [0.5, 0.6, 0.7]
+MIN_TUNE_TRADES = 1000   # a gate setting needs this many 2024 trades to be eligible (spec section 6)
 BID_CAP = 25.0
 MAX_MW_HOUR = 10.0
 MAX_MW_DAY = 40.0

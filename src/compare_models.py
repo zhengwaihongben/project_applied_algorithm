@@ -10,7 +10,8 @@ Univariate for now: wind/load/solar inputs are added once the covariate table ex
     uv run python src/compare_models.py tabpfn      # Prior Labs TabPFN-TS, cloud; needs TABPFN_TOKEN
     uv run python src/compare_models.py baseline    # trailing 90-day quantiles per hour of day
     uv run python src/compare_models.py zero        # "the auction is right"
-    uv run python src/compare_models.py score       # compare everything forecast so far
+    uv run python src/compare_models.py score       # compare everything, on the days every model has
+    uv run python src/compare_models.py score chronos timesfm baseline zero   # only these models
 
 Forecasts are cached in output/forecasts/compare/<model>_ctx<hours>.csv; reruns skip finished days,
 and changing a model's history length starts a new file.
@@ -31,9 +32,11 @@ from spreads import build_spreads
 TZ = "America/Chicago"
 OUT = FORECASTS / "compare"
 ALL_PAIRS = list(itertools.combinations(HUBS, 2))   # one direction per pair; the other is the negative
-TABPFN_CONTEXT = 2016                               # 12 weeks; cloud cost grows with context rows
+TABPFN_CONTEXT = 2016                               # 12 weeks
+TABPFN_EVERY = 8        # shortcut: free tier is 5M tokens/day, ~10k per series; every 8th day = 460 series and
+                        # rotates through weekdays. Use 1 with a paid plan or local mode.
 BASELINE_DAYS = 90
-ALPHA = 0.7                                         # middle of the spec's grid {0.6, 0.7, 0.8}
+ALPHA = 0.7                                         # quick check with the deck's original gate ($5, 70%)
 
 
 def day_window(day):
@@ -85,7 +88,18 @@ def tabpfn(ctx, future):
         _cache["tabpfn"] = TabPFNTSPipeline(tabpfn_mode=TabPFNMode.CLIENT)
     long = ctx.tail(TABPFN_CONTEXT).rename_axis("timestamp").reset_index().melt("timestamp", var_name="item_id", value_name="target")
     long["timestamp"] = long["timestamp"].dt.tz_localize(None)
-    pred = _cache["tabpfn"].predict_df(long, prediction_length=len(future), quantiles=QUANTILES).reset_index()
+    # Prior Labs allows 60 fit requests per minute and each day is one fit per pair (10), so pace days
+    # at least 12 s apart and wait out any 429 that still comes back.
+    time.sleep(max(0.0, _cache.get("tabpfn_last", 0) + 12 - time.time()))
+    for attempt in range(6):
+        try:
+            pred = _cache["tabpfn"].predict_df(long, prediction_length=len(future), quantiles=QUANTILES).reset_index()
+            break
+        except RuntimeError as e:
+            if "429" not in str(e) or attempt == 5:
+                raise
+            time.sleep(30 * (attempt + 1))
+    _cache["tabpfn_last"] = time.time()
     qcols = {str(c): c for c in pred.columns}
     pred = pred.sort_values(["item_id", "timestamp"])
     return {p: g[[qcols[str(q)] for q in QUANTILES]].to_numpy() for p, g in pred.groupby("item_id")}
@@ -133,7 +147,8 @@ def run(name):
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"{name}_ctx{CONTEXT[name]}.csv"   # a new setting starts a new file instead of mixing runs
     done = set(pd.read_csv(path, usecols=["delivery_date"])["delivery_date"]) if path.exists() else set()
-    days = [d for d in pd.date_range(TRAIN_START, TRAIN_END) if d.strftime("%Y-%m-%d") not in done]
+    every = TABPFN_EVERY if name == "tabpfn" else 1
+    days = [d for d in pd.date_range(TRAIN_START, TRAIN_END)[::every] if d.strftime("%Y-%m-%d") not in done]
     t0 = time.time()
     for i, day in enumerate(days, 1):
         forecast_day(grid, day, MODELS[name]).to_csv(path, mode="a", header=not path.exists(), index=False)
@@ -148,7 +163,7 @@ def tabpfn_cost(n_features=40):
         sys.exit("Set TABPFN_TOKEN (Prior Labs API key) in the run configuration's environment variables.")
     tabpfn_client.set_access_token(os.environ["TABPFN_TOKEN"])
     est = tabpfn_client.estimate_cost(np.zeros((TABPFN_CONTEXT, n_features)), np.zeros((48, n_features)))
-    n_series = len(pd.date_range(TRAIN_START, TRAIN_END)) * len(ALL_PAIRS)
+    n_series = len(pd.date_range(TRAIN_START, TRAIN_END)[::TABPFN_EVERY]) * len(ALL_PAIRS)
     print(f"one series ({TABPFN_CONTEXT} rows x ~{n_features} features): {est.estimated_cost} tokens")
     print(f"full run ({n_series} series): ~{float(est.estimated_cost) * n_series:,.0f} tokens")
     print(tabpfn_client.get_api_usage())
@@ -159,11 +174,13 @@ def pinball(y, f, q):
     return np.maximum(q * d, (q - 1) * d)
 
 
-def score():
+def score(names=()):
     grid = error_grid()
     actual = grid.stack().rename("error").rename_axis(["hour_ending", "pair"]).reset_index()
     frames = {}
     for path in sorted(OUT.glob("*.csv")):
+        if names and not path.stem.startswith(tuple(names)):
+            continue
         f = pd.read_csv(path)
         f["hour_ending"] = pd.to_datetime(f["hour_ending"], utc=True)
         frames[path.stem] = f.merge(actual, on=["pair", "hour_ending"])
@@ -200,7 +217,7 @@ def score():
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     if arg == "score":
-        score()
+        score(sys.argv[2:])
     elif arg == "tabpfn-cost":
         tabpfn_cost()
     elif arg in MODELS:

@@ -105,8 +105,10 @@ CONTEXT_HOURS = 8192     # Chronos-2 max; lower it if Task 8 timing is too slow
 
 # Trading rules
 CAPITAL = 1_000_000.0
-EDGE_THRESHOLD = 5.0
-ALPHAS = [0.6, 0.7, 0.8]
+EDGE_THRESHOLD = 5.0     # deck's original rule; still used by the flat alternatives S1-S4 and quick model checks
+EDGE_THRESHOLDS = [2.0, 3.0, 5.0]   # tuned jointly with ALPHAS on 2024 only, then frozen (spec section 6)
+ALPHAS = [0.5, 0.6, 0.7]
+MIN_TUNE_TRADES = 1000   # a gate setting needs this many 2024 trades to be eligible (spec section 6)
 BID_CAP = 25.0
 MAX_MW_HOUR = 10.0
 MAX_MW_DAY = 40.0
@@ -1399,21 +1401,25 @@ def in_period(df, name):
     return df[df["delivery_date"].between(pd.Timestamp(start), pd.Timestamp(end))]
 
 
-def simulate(fc, err, alpha, cost, period, scarce):
-    bids = gate_and_size(in_period(fc, period), alpha, c.CAPITAL, c.EDGE_THRESHOLD, c.MAX_MW_HOUR, c.SIGMA_FLOOR)
+def simulate(fc, err, alpha, threshold, cost, period, scarce):
+    bids = gate_and_size(in_period(fc, period), alpha, c.CAPITAL, threshold, c.MAX_MW_HOUR, c.SIGMA_FLOOR)
     bids = bids.merge(err[ERR_COLS], on=["pair", "hour_ending"])
     bids = apply_daily_cap(clear(bids, c.BID_CAP), c.MAX_MW_DAY)
     return run_backtest(bids, c.CAPITAL, cost, scarce, c.DAILY_HALF, c.DAILY_STOP, c.MAX_DRAWDOWN)
 
 
-def tune_alpha(fc, err, scarce):
-    """Highest 2024 Sharpe; ties -> fewest trades (spec 6.1)."""
+def tune_gate(fc, err, scarce):
+    """(alpha, threshold) with the highest 2024 Sharpe among settings with >= MIN_TUNE_TRADES trades;
+    ties -> fewest trades (spec 6.1). None if no setting trades enough: the model then sits out."""
     scores = []
     for a in c.ALPHAS:
-        s = summarize(*simulate(fc, err, a, c.COST_PER_MWH, "train", scarce), c.CAPITAL)
-        sharpe = s["sharpe"] if s["sharpe"] == s["sharpe"] else float("-inf")
-        scores.append((sharpe, -s["trades"], a))
-    return max(scores)[2]
+        for th in c.EDGE_THRESHOLDS:
+            s = summarize(*simulate(fc, err, a, th, c.COST_PER_MWH, "train", scarce), c.CAPITAL)
+            if s["trades"] < c.MIN_TUNE_TRADES:
+                continue
+            sharpe = s["sharpe"] if s["sharpe"] == s["sharpe"] else float("-inf")
+            scores.append((sharpe, -s["trades"], a, th))
+    return max(scores)[2:] if scores else None
 
 
 def breakeven(costs, pnls):
@@ -1444,14 +1450,18 @@ def main():
     }
     results = {"pairs": [f"{a}->{b}" for a, b in c.PAIRS], "models": {}}
     for name, fc in models.items():
-        alpha = tune_alpha(fc, err, scarce)
-        r = {"alpha": alpha}
+        gate = tune_gate(fc, err, scarce)
+        if gate is None:                       # no setting reached MIN_TUNE_TRADES in 2024: report, don't trade
+            results["models"][name] = {"alpha": None, "threshold": None, "note": "fewer than MIN_TUNE_TRADES"}
+            continue
+        alpha, threshold = gate
+        r = {"alpha": alpha, "threshold": threshold}
         for period in c.PERIODS:
-            daily, log = simulate(fc, err, alpha, c.COST_PER_MWH, period, scarce)
+            daily, log = simulate(fc, err, alpha, threshold, c.COST_PER_MWH, period, scarce)
             r[period] = {
                 **summarize(daily, log, c.CAPITAL),
                 **block_bootstrap(daily["pnl"]),
-                "forecast": forecast_quality(in_period(fc, period), err, alpha, c.EDGE_THRESHOLD),
+                "forecast": forecast_quality(in_period(fc, period), err, alpha, threshold),
             }
             daily.to_csv(c.OUTPUT / f"daily_{name}_{period}.csv", index_label="delivery_date")
             log.to_csv(c.OUTPUT / f"trade_log_{name}_{period}.csv", index=False)
@@ -1461,8 +1471,8 @@ def main():
     results["zero_mae"] = {p: forecast_quality(in_period(zero_forecast(err), p), err, 0.7, c.EDGE_THRESHOLD)["mae"]
                            for p in c.PERIODS}
 
-    fc, alpha = models["chronos_cov"], results["models"]["chronos_cov"]["alpha"]
-    pnls = [sum(summarize(*simulate(fc, err, alpha, cost, p, scarce), c.CAPITAL)["total_pnl"]
+    fc, r = models["chronos_cov"], results["models"]["chronos_cov"]
+    pnls = [sum(summarize(*simulate(fc, err, r["alpha"], r["threshold"], cost, p, scarce), c.CAPITAL)["total_pnl"]
                 for p in ("test_a", "test_b")) for cost in c.COSTS]
     results["cost_sensitivity"] = {"costs": c.COSTS, "test_pnl": pnls, "breakeven_cost": breakeven(c.COSTS, pnls)}
 
