@@ -1,381 +1,132 @@
+"""Download ERCOT DAM and RTM settlement point prices for all hubs, one CSV per month.
 
+Calls the ERCOT Public API directly and reads the response's named fields. The `ercot` package's
+er.dam/er.rtm guess column meanings from the data and mislabel RTM hour/interval columns, so we only
+use its ErcotAuth (handles the 1-hour token refresh).
+
+Credentials: ERCOT_USERNAME, ERCOT_PASSWORD, ERCOT_SUBSCRIPTION_KEY. Re-running skips finished months.
+The API only has data from mid-December 2023 onwards.
+"""
 import os
+import time
+
 import pandas as pd
-import ercot as er
+import requests
+from ercot.auth import ErcotAuth
+from ercot.models import BASE_URL
+
+from config import DOWNLOAD_START, END, HUBS, RAW_DAM, RAW_RTM
+
+DAM_PATH = "/np4-190-cd/dam_stlmnt_pnt_prices"
+RTM_PATH = "/np6-905-cd/spp_node_zone_hub"
+
+
+def month_ranges(start, end):
+    """[(first_day, last_day), ...] per calendar month, clipped to [start, end], as YYYY-MM-DD."""
+    out = []
+    for m in pd.period_range(start, end, freq="M"):
+        a = max(m.start_time, pd.Timestamp(start))
+        b = min(m.end_time.normalize(), pd.Timestamp(end))
+        out.append((a.strftime("%Y-%m-%d"), b.strftime("%Y-%m-%d")))
+    return out
+
+
+def with_retry(call, tries=6, wait=60):
+    """Run call(); on HTTP 429 (rate limit) wait 60s, 120s, ... (or the server's Retry-After) and try again."""
+    for i in range(tries):
+        try:
+            return call()
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 429 or i == tries - 1:
+                raise
+            retry_after = e.response.headers.get("Retry-After", "")
+            time.sleep(int(retry_after) if retry_after.isdigit() else wait * (i + 1))
+
+
+def fetch(auth, path, params):
+    """All pages of one API query as a DataFrame with the API's own field names."""
+    rows, page = [], 1
+    while True:
+        r = requests.get(BASE_URL + path, headers=auth.get_headers(),
+                         params={**params, "size": 100_000, "page": page}, timeout=120)
+        r.raise_for_status()
+        payload = r.json()
+        fields = [f["name"] for f in payload["fields"]]
+        rows += payload.get("data") or []
+        if page >= payload["_meta"]["totalPages"]:
+            return pd.DataFrame(rows, columns=fields)
+        page += 1
+
+
+def _interval_ending(dates, begin_offset, length, dst_flag):
+    """UTC end of each interval. Localize the interval *start* (always a real wall-clock time);
+    DSTFlag 'Y' marks the repeated fall-back hour, which is standard time."""
+    repeated = dst_flag.astype(str).str.upper().isin(["Y", "TRUE"]).to_numpy()
+    begin = (pd.to_datetime(dates) + begin_offset).dt.tz_localize("America/Chicago", ambiguous=~repeated)
+    return (begin + length).dt.tz_convert("UTC")
+
+
+def to_long_dam(raw):
+    hour = raw["hourEnding"].astype(str).str.split(":").str[0].astype(int)
+    return pd.DataFrame({
+        "date": raw["deliveryDate"],
+        "settlement_point": raw["settlementPoint"],
+        "hour": hour,
+        "interval_ending": _interval_ending(raw["deliveryDate"], pd.to_timedelta(hour - 1, unit="h"),
+                                            pd.Timedelta(hours=1), raw["DSTFlag"]),
+        "price": pd.to_numeric(raw["settlementPointPrice"]),
+    })
+
+
+def to_long_rtm(raw):
+    hour = raw["deliveryHour"].astype(int)
+    interval = raw["deliveryInterval"].astype(int)
+    offset = pd.to_timedelta(hour - 1, unit="h") + pd.to_timedelta((interval - 1) * 15, unit="min")
+    return pd.DataFrame({
+        "date": raw["deliveryDate"],
+        "settlement_point": raw["settlementPoint"],
+        "interval": (hour - 1) * 4 + interval,
+        "interval_ending": _interval_ending(raw["deliveryDate"], offset, pd.Timedelta(minutes=15), raw["DSTFlag"]),
+        "price": pd.to_numeric(raw["settlementPointPrice"]),
+    })
+
+
+def fetch_month(fetch_hub, first, last):
+    """One request per hub: the API's settlementPoint filter takes a single value, not a comma list."""
+    parts = []
+    for hub in HUBS:
+        parts.append(with_retry(lambda: fetch_hub(hub, first, last)))
+        time.sleep(1)  # be gentle with ERCOT's rate limit
+    df = pd.concat(parts, ignore_index=True)
+    got = set(df["settlement_point"]) if "settlement_point" in df else set()
+    missing = [h for h in HUBS if h not in got]
+    if missing:
+        # Never save a partial month: a saved file is treated as finished and skipped on rerun.
+        raise RuntimeError(f"no data for {missing} in {first}..{last}")
+    return df
+
+
+def download_all():
+    auth = ErcotAuth(os.environ["ERCOT_USERNAME"], os.environ["ERCOT_PASSWORD"], os.environ["ERCOT_SUBSCRIPTION_KEY"])
+    markets = {
+        "DAM": (RAW_DAM, DAM_PATH, to_long_dam),
+        "RTM": (RAW_RTM, RTM_PATH, to_long_rtm),
+    }
+    for folder, _, _ in markets.values():
+        folder.mkdir(parents=True, exist_ok=True)
+    for first, last in month_ranges(DOWNLOAD_START, END):
+        for market, (folder, path, to_long) in markets.items():
+            out = folder / f"{market}_hubs_{first[:7]}.csv"
+            if out.exists():
+                continue
+
+            def fetch_hub(hub, a, b, path=path, to_long=to_long):
+                params = {"deliveryDateFrom": a, "deliveryDateTo": b, "settlementPoint": hub}
+                return to_long(fetch(auth, path, params))
+
+            fetch_month(fetch_hub, first, last).to_csv(out, index=False)
+            print(f"saved {out.name}")
 
-from pathlib import Path
-from ercot.client import ErcotClient
-
-
-# ============================================================
-# 1. ERCOT API Configuration
-# ============================================================
-
-USERNAME = os.getenv("ERCOT_USERNAME")
-PASSWORD = os.getenv("ERCOT_PASSWORD")
-SUBSCRIPTION_KEY = os.getenv("ERCOT_SUBSCRIPTION_KEY")
-
-if not all([USERNAME, PASSWORD, SUBSCRIPTION_KEY]):
-    raise ValueError(
-        "Missing ERCOT credentials. "
-        "Please set ERCOT_USERNAME, ERCOT_PASSWORD, "
-        "and ERCOT_SUBSCRIPTION_KEY as environment variables."
-    )
-
-er.configure(USERNAME, PASSWORD, SUBSCRIPTION_KEY)
-
-
-# ============================================================
-# 2. Project Configuration
-# ============================================================
-
-START_DATE = "2026-01-01"
-END_DATE = "2026-05-31"
-
-POINTS = [
-    "HB_WEST",
-    "HB_NORTH"
-]
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-DAM_DIR = BASE_DIR / "data" / "raw" / "DAM"
-RTM_DIR = BASE_DIR / "data" / "raw" / "RTM"
-
-DAM_DIR.mkdir(parents=True, exist_ok=True)
-RTM_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# ============================================================
-# 3. Fix ERCOT RTM Positional Column Mapping
-# ============================================================
-
-_original_assign = ErcotClient._assign_positional_names
-
-
-def fixed_assign_positional_names(df):
-    """
-    Correctly identify ERCOT RTM's seven positional columns.
-
-    Expected RTM columns:
-        0: delivery_date
-        1: hour_ending
-        2: interval
-        3: settlement_point
-        4: settlement_point_type
-        5: price
-        6: repeated_hour
-    """
-
-    df = df.copy()
-
-    # ERCOT RTM returns seven positional columns
-    if list(df.columns) == [str(i) for i in range(7)]:
-
-        df.columns = [
-            "delivery_date",
-            "hour_ending",
-            "interval",
-            "settlement_point",
-            "settlement_point_type",
-            "price",
-            "repeated_hour"
-        ]
-
-        # Convert numeric columns
-        df["hour_ending"] = pd.to_numeric(
-            df["hour_ending"],
-            errors="coerce"
-        )
-
-        df["interval"] = pd.to_numeric(
-            df["interval"],
-            errors="coerce"
-        ).fillna(1).astype(int)
-
-        df["price"] = pd.to_numeric(
-            df["price"],
-            errors="coerce"
-        )
-
-        # Convert repeated_hour to Boolean
-        df["repeated_hour"] = (
-            df["repeated_hour"]
-            .astype(str)
-            .str.upper()
-            .isin(["TRUE", "Y", "YES", "1"])
-        )
-
-        return df
-
-    # Keep the original behavior for other data formats
-    return _original_assign(df)
-
-
-ErcotClient._assign_positional_names = staticmethod(
-    fixed_assign_positional_names
-)
-
-
-# ============================================================
-# 4. Fix ERCOT RTM Formatting
-# ============================================================
-
-_original_format_spp = ErcotClient._format_spp
-
-
-def fixed_format_spp(self, df, market, fmt):
-    """
-    Preserve normalized raw RTM data instead of converting
-    it into the package's long-format representation.
-
-    This is necessary because the package's RTM long-format
-    conversion appears to produce incorrect interval_ending
-    timestamps by not preserving hour_ending correctly.
-
-    DAM continues to use the original formatting function.
-    """
-
-    normalized = self._normalize_columns(df)
-
-    if market.upper() == "RTM":
-        return normalized
-
-    # Keep original formatting behavior for DAM
-    return _original_format_spp(self, df, market, fmt)
-
-
-ErcotClient._format_spp = fixed_format_spp
-
-
-# ============================================================
-# 5. Download and Save DAM Data
-# ============================================================
-
-def download_dam():
-
-    print("\nStarting DAM download...")
-
-    for point in POINTS:
-
-        print(f"\nDownloading DAM data for {point}...")
-
-        df_dam = er.dam(
-            point,
-            START_DATE,
-            END_DATE
-        )
-
-        output_file = (
-            DAM_DIR /
-            f"DAM_{point}_{START_DATE}_{END_DATE}.csv"
-        )
-
-        df_dam.to_csv(
-            output_file,
-            index=False
-        )
-
-        print(f"Saved: {output_file}")
-        print(f"Shape: {df_dam.shape}")
-
-    print("\nDAM download completed.")
-
-
-# ============================================================
-# 6. Download and Save RTM Data
-# ============================================================
-
-def download_rtm():
-
-    print("\nStarting RTM download...")
-
-    for point in POINTS:
-
-        print(f"\nDownloading RTM data for {point}...")
-
-        df_rtm = er.rtm(
-            [point],
-            START_DATE,
-            END_DATE,
-            format="long"
-        )
-
-        # Save raw normalized RTM data
-        # Note: format="long" is intentionally bypassed
-        # by fixed_format_spp() above.
-
-        output_file = (
-            RTM_DIR /
-            f"RTM_{point}_{START_DATE}_{END_DATE}.csv"
-        )
-
-        df_rtm.to_csv(
-            output_file,
-            index=False
-        )
-
-        print(f"Saved: {output_file}")
-        print(f"Shape: {df_rtm.shape}")
-
-        print("\nColumns:")
-        print(df_rtm.columns.tolist())
-
-        print("\nFirst 12 rows:")
-        print(df_rtm.head(12).to_string(index=False))
-
-    print("\nRTM download completed.")
-
-
-# ============================================================
-# 7. Validate RTM Data
-# ============================================================
-
-def validate_rtm():
-
-    print("\nStarting RTM validation...")
-
-    for point in POINTS:
-
-        print(f"\nValidating {point}...")
-
-        input_file = (
-            RTM_DIR /
-            f"RTM_{point}_{START_DATE}_{END_DATE}.csv"
-        )
-
-        df = pd.read_csv(input_file)
-
-        df["delivery_date"] = pd.to_datetime(
-            df["delivery_date"],
-            errors="coerce"
-        ).dt.date
-
-        # 1. Basic validation
-        print("\nDate range:")
-        print(df["delivery_date"].min())
-        print(df["delivery_date"].max())
-
-        daily_counts = df.groupby("delivery_date").size()
-
-        print("\nRecords per date:")
-        print(daily_counts.describe())
-
-        print("\nDates with record counts different from 96:")
-        print(daily_counts[daily_counts != 96])
-
-        print("\nUnique intervals:")
-        print(sorted(df["interval"].dropna().unique()))
-
-        print("\nUnique hour-ending values:")
-        print(sorted(df["hour_ending"].dropna().unique()))
-
-        print("\nRepeated-hour distribution:")
-        print(df["repeated_hour"].value_counts(dropna=False))
-
-        print("\nMissing values:")
-        print(df.isnull().sum())
-
-        # 2. Identify duplicate interval records
-        duplicate_key = [
-            "delivery_date",
-            "hour_ending",
-            "interval",
-            "repeated_hour",
-            "settlement_point"
-        ]
-
-        duplicates = df[
-            df.duplicated(
-                subset=duplicate_key,
-                keep=False
-            )
-        ].sort_values(duplicate_key)
-
-        print("\n========== DUPLICATE RECORDS ==========")
-
-        if duplicates.empty:
-            print("No duplicate records found.")
-        else:
-            print(duplicates.to_string(index=False))
-
-        # 3. Check intervals in each delivery hour
-        hourly_counts = (
-            df.groupby(
-                [
-                    "delivery_date",
-                    "hour_ending",
-                    "repeated_hour"
-                ]
-            )
-            .agg(
-                record_count=("interval", "size"),
-                unique_intervals=("interval", "nunique"),
-                intervals=("interval", lambda x: sorted(x.tolist()))
-            )
-            .reset_index()
-        )
-
-        abnormal_hours = hourly_counts[
-            (hourly_counts["record_count"] != 4) |
-            (hourly_counts["unique_intervals"] != 4)
-        ]
-
-        print("\n========== ABNORMAL DELIVERY HOURS ==========")
-
-        if abnormal_hours.empty:
-            print("All delivery hours have exactly 4 intervals.")
-        else:
-            print(abnormal_hours.to_string(index=False))
-
-        # 4. Identify missing intervals
-        print("\n========== MISSING INTERVALS ==========")
-
-        expected_intervals = {1, 2, 3, 4}
-
-        for _, row in hourly_counts.iterrows():
-
-            actual_intervals = set(row["intervals"])
-
-            missing_intervals = (
-                expected_intervals - actual_intervals
-            )
-
-            if missing_intervals:
-                print(
-                    f"Date: {row['delivery_date']}, "
-                    f"Hour Ending: {row['hour_ending']}, "
-                    f"Repeated Hour: {row['repeated_hour']}, "
-                    f"Missing: {sorted(missing_intervals)}"
-                )
-
-        # 5. Check delivery hours per day
-        print("\n========== DELIVERY HOURS PER DAY ==========")
-
-        daily_hours = df.groupby("delivery_date")["hour_ending"].nunique()
-
-        abnormal_days = daily_hours[daily_hours != 24]
-
-        if abnormal_days.empty:
-            print("All dates have exactly 24 delivery hours.")
-        else:
-            print("Dates with abnormal delivery hours:")
-            print(abnormal_days.to_string())
-
-# ============================================================
-# 8. Main
-# ============================================================
 
 if __name__ == "__main__":
-
-    print("=" * 60)
-    print("ERCOT DATA DOWNLOAD")
-    print("=" * 60)
-
-    download_dam()
-
-    download_rtm()
-
-    validate_rtm()
-
-    print("\nAll tasks completed.")
+    download_all()
