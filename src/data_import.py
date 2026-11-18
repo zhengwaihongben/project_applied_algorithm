@@ -49,7 +49,8 @@ def fetch(auth, path, params):
     while True:
         r = requests.get(BASE_URL + path, headers=auth.get_headers(),
                          params={**params, "size": 100_000, "page": page}, timeout=120)
-        r.raise_for_status()
+        if not r.ok:   # keep ERCOT's reason (e.g. quota or key problem); the body never holds our credentials
+            raise requests.HTTPError(f"{r.status_code} for {path}: {r.text[:300]}", response=r)
         payload = r.json()
         fields = [f["name"] for f in payload["fields"]]
         rows += payload.get("data") or []

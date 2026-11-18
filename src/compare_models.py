@@ -24,7 +24,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from config import CLIP, CONTEXT_HOURS, COST_PER_MWH, EDGE_THRESHOLD, FORECASTS, HUBS, OUTPUT, QCOLS, QUANTILES, \
+from config import PERIODS, CLIP, CONTEXT_HOURS, COST_PER_MWH, EDGE_THRESHOLD, FORECASTS, HUBS, OUTPUT, QCOLS, QUANTILES, \
     TRAIN_END, TRAIN_START
 from processing import load_hourly
 from spreads import build_spreads
@@ -36,6 +36,7 @@ TABPFN_CONTEXT = 2016                               # 12 weeks
 TABPFN_EVERY = 8        # shortcut: free tier is 5M tokens/day, ~10k per series; every 8th day = 460 series and
                         # rotates through weekdays. Use 1 with a paid plan or local mode.
 BASELINE_DAYS = 90
+ctx_hours = CONTEXT_HOURS                           # history Chronos-2/TimesFM see; `--ctx N` overrides
 ALPHA = 0.7                                         # quick check with the deck's original gate ($5, 70%)
 
 
@@ -62,7 +63,7 @@ def chronos(ctx, future):
     from chronos import Chronos2Pipeline
     if "chronos" not in _cache:
         _cache["chronos"] = Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map="cpu")
-    long = ctx.tail(CONTEXT_HOURS).rename_axis("timestamp").reset_index().melt("timestamp", var_name="id", value_name="target")
+    long = ctx.tail(ctx_hours).rename_axis("timestamp").reset_index().melt("timestamp", var_name="id", value_name="target")
     long["timestamp"] = long["timestamp"].dt.tz_localize(None)       # Chronos-2 wants naive timestamps
     pred = _cache["chronos"].predict_df(long, prediction_length=len(future), quantile_levels=QUANTILES,
                                         id_column="id", timestamp_column="timestamp", target="target")
@@ -74,7 +75,7 @@ def timesfm(ctx, future):
     import timesfm as tfm
     if "timesfm" not in _cache:
         _cache["timesfm"] = tfm.TimesFM3Forecaster.from_pretrained("google/timesfm-3.0-pytorch", device="cpu")
-    ctx = ctx.tail(CONTEXT_HOURS)
+    ctx = ctx.tail(ctx_hours)
     outs = _cache["timesfm"].predict_batch([ctx[p].to_numpy("float32") for p in ctx], horizon=len(future),
                                            return_quantiles=True)
     return {p: o.quantiles[: len(future)] for p, o in zip(ctx.columns, outs)}   # quantiles are 0.1..0.9
@@ -105,6 +106,49 @@ def tabpfn(ctx, future):
     return {p: g[[qcols[str(q)] for q in QUANTILES]].to_numpy() for p, g in pred.groupby("item_id")}
 
 
+FUNDAMENTALS = ["wind_west", "wind_pan", "wind_sys", "solar_sys", "load_ncent", "load_farwest", "load_coast",
+                "load_sys", "net_load", "west_surplus"]
+CALENDAR = ["hour", "dow", "month", "holiday"]
+
+
+def _chronos_with(ctx, future, cols):
+    """Chronos-2 with known-future covariates: each value is the forecast as it stood at 10:00 the day before."""
+    from covariates import calendar, load_covariates
+    if "cov" not in _cache:
+        _cache["cov"] = load_covariates()
+    ctx = ctx.tail(ctx_hours)
+    idx = ctx.index.append(future)
+    cov = calendar(pd.Series(idx)).set_index(idx)
+    fund = [c for c in cols if c not in CALENDAR]
+    if fund:
+        f = _cache["cov"][fund].reindex(idx)
+        if f.loc[future].isna().any().any():
+            return None                      # spec 4.2: no forecast for day T -> no trades that day
+        cov = cov.join(f.ffill().bfill())    # small gaps in the history only
+    cov = cov[cols]
+    naive = idx.tz_localize(None)            # Chronos-2 wants naive timestamps
+    past = [pd.DataFrame({"timestamp": naive[:len(ctx)], "id": p, "target": ctx[p].to_numpy()})
+            .join(cov.iloc[:len(ctx)].reset_index(drop=True)) for p in ctx]
+    fut = [pd.DataFrame({"timestamp": naive[len(ctx):], "id": p}).join(cov.iloc[len(ctx):].reset_index(drop=True))
+           for p in ctx]
+    if "chronos" not in _cache:
+        from chronos import Chronos2Pipeline
+        _cache["chronos"] = Chronos2Pipeline.from_pretrained("amazon/chronos-2", device_map="cpu")
+    pred = _cache["chronos"].predict_df(pd.concat(past), future_df=pd.concat(fut), prediction_length=len(future),
+                                        quantile_levels=QUANTILES, id_column="id", timestamp_column="timestamp",
+                                        target="target")
+    pred = pred.sort_values(["id", "timestamp"])
+    return {p: g[[str(q) for q in QUANTILES]].to_numpy() for p, g in pred.groupby("id")}
+
+
+def chronos_cal(ctx, future):
+    return _chronos_with(ctx, future, CALENDAR)
+
+
+def chronos_cov(ctx, future):
+    return _chronos_with(ctx, future, CALENDAR + FUNDAMENTALS)
+
+
 def baseline(ctx, future):
     """Empirical quantiles of the last 90 days, by local hour of day."""
     recent = ctx.tail(BASELINE_DAYS * 24)
@@ -118,10 +162,12 @@ def zero(ctx, future):
     return {p: np.zeros((len(future), len(QUANTILES))) for p in ctx}
 
 
-MODELS = {"chronos": chronos, "timesfm": timesfm, "tabpfn": tabpfn, "baseline": baseline, "zero": zero}
+MODELS = {"chronos": chronos, "chronos_cal": chronos_cal, "chronos_cov": chronos_cov, "timesfm": timesfm,
+          "tabpfn": tabpfn, "baseline": baseline, "zero": zero}
 
 
-CONTEXT = {"chronos": CONTEXT_HOURS, "timesfm": CONTEXT_HOURS, "tabpfn": TABPFN_CONTEXT,
+CONTEXT = {"chronos": CONTEXT_HOURS, "chronos_cal": CONTEXT_HOURS, "chronos_cov": CONTEXT_HOURS,
+           "timesfm": CONTEXT_HOURS, "tabpfn": TABPFN_CONTEXT,
            "baseline": BASELINE_DAYS * 24, "zero": 0}   # hours of history each model sees; part of the file name
 
 
@@ -131,8 +177,11 @@ def forecast_day(grid, day, model):
     ctx = grid.loc[:origin].ffill().clip(-CLIP, CLIP)              # nothing after the end of T-2
     future = pd.date_range(origin + pd.Timedelta(hours=1), end, freq="h")
     keep = future > start                                           # hours of day T only
+    out = model(ctx, future)
+    if out is None:                                                 # model can't forecast this day (no covariates)
+        return None
     rows = []
-    for pair, q in model(ctx, future).items():
+    for pair, q in out.items():
         part = pd.DataFrame(np.sort(q[keep], axis=1), columns=QCOLS)    # sorted: no quantile crossing
         part.insert(0, "hour_ending", future[keep])
         part.insert(0, "pair", pair)
@@ -142,16 +191,28 @@ def forecast_day(grid, day, model):
     return out
 
 
-def run(name):
+def run(name, ctx=None, pair=None, period="train"):
+    """ctx: override the history length (hours); pair: only this pair, e.g. HB_WEST->HB_NORTH; period: config.PERIODS."""
+    global ctx_hours
     grid = error_grid()
+    if ctx:
+        ctx_hours = CONTEXT[name] = ctx
+    if pair:
+        grid = grid[[pair]]
     OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / f"{name}_ctx{CONTEXT[name]}.csv"   # a new setting starts a new file instead of mixing runs
+    tag = f"_{pair.replace('HB_', '').replace('->', '-')}" if pair else ""
+    tag += "" if period == "train" else f"_{period}"
+    path = OUT / f"{name}_ctx{CONTEXT[name]}{tag}.csv"   # a new setting starts a new file instead of mixing runs
     done = set(pd.read_csv(path, usecols=["delivery_date"])["delivery_date"]) if path.exists() else set()
     every = TABPFN_EVERY if name == "tabpfn" else 1
-    days = [d for d in pd.date_range(TRAIN_START, TRAIN_END)[::every] if d.strftime("%Y-%m-%d") not in done]
+    days = [d for d in pd.date_range(*PERIODS[period])[::every] if d.strftime("%Y-%m-%d") not in done]
     t0 = time.time()
     for i, day in enumerate(days, 1):
-        forecast_day(grid, day, MODELS[name]).to_csv(path, mode="a", header=not path.exists(), index=False)
+        out = forecast_day(grid, day, MODELS[name])
+        if out is None:
+            print(f"{name}: no covariates for {day:%Y-%m-%d}, skipped")
+            continue
+        out.to_csv(path, mode="a", header=not path.exists(), index=False)
         if i % 10 == 0 or i == len(days):
             print(f"{name}: {i}/{len(days)} days, {time.time() - t0:.0f}s", flush=True)
 
@@ -203,6 +264,13 @@ def score(names=()):
             "pnl_per_trade": pnl[traded].mean() if traded.any() else np.nan,
             "total_pnl_1MW": pnl.sum(),
         }
+        # Equal-volume check (spec section 8): each model's N most confident hours, 1 MW in the direction of q50.
+        top = np.argsort(-np.abs(f["q50"].to_numpy()), kind="stable")
+        for n in (500, 2000, 5000):
+            k = top[:n]
+            pk = np.sign(f["q50"].to_numpy()[k]) * y[k] - COST_PER_MWH
+            rows[name][f"hit_{n}"] = (pk > 0).mean()
+            rows[name][f"pnl/trade_{n}"] = pk.mean()
         pnl_by_pair[name] = pd.Series(pnl).groupby(f["pair"].to_numpy()).sum()
     table = pd.DataFrame(rows).T.sort_values("pinball")
     print("Forecast quality (lower pinball/MAE is better; cover_10_90 should be ~0.80)")
@@ -221,6 +289,7 @@ if __name__ == "__main__":
     elif arg == "tabpfn-cost":
         tabpfn_cost()
     elif arg in MODELS:
-        run(arg)
+        opts = dict(zip(sys.argv[2::2], sys.argv[3::2]))     # optional: --ctx 2048 --pair HB_WEST->HB_NORTH --period test_a
+        run(arg, int(opts["--ctx"]) if "--ctx" in opts else None, opts.get("--pair"), opts.get("--period", "train"))
     else:
         sys.exit(__doc__)

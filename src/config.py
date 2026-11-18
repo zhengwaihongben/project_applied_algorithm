@@ -21,10 +21,11 @@ PERIODS = {                      # name -> (start, end), delivery dates inclusiv
 END = PERIODS["test_b"][1]
 
 # Forecast inputs (API field name -> our column)
-WIND_FIELDS = {"STWPFWest": "wind_west", "STWPFPanhandle": "wind_pan"}
+WIND_FIELDS = {"STWPFWest": "wind_west", "STWPFPanhandle": "wind_pan", "STWPFSystemWide": "wind_sys"}
+SOLAR_FIELDS = {"STPPFSystemWide": "solar_sys", "STPPFFarWest": "solar_farwest", "STPPFCenterWest": "solar_cwest"}
 LOAD_FIELDS = {
-    "north": "load_north", "northCentral": "load_ncent", "farWest": "load_farwest",
-    "coast": "load_coast", "southCentral": "load_scent", "southern": "load_south",
+    "north": "load_north", "northCentral": "load_ncent", "farWest": "load_farwest", "west": "load_west",
+    "coast": "load_coast", "southCentral": "load_scent", "southern": "load_south", "systemTotal": "load_sys",
 }
 
 # Models
