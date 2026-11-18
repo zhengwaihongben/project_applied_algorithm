@@ -73,6 +73,16 @@ All models output the 10th, 20th, …, 90th percentiles of `error` (`q10` … `q
 
 Out of scope: fine-tuning, ridge regression or other learned models, combining models, binding transmission constraints (shadow prices), outages.
 
+**Change (2026-11-17): LightGBM becomes the main model; Chronos-2 stays as the comparison.** Equal-volume results on West→North (top 500 hours, 1 MW, $0.50 cost, 95% 7-day block-bootstrap interval):
+
+| Model | Pinball 2024 / A / B | PnL 2024 | PnL Test A | PnL Test B |
+|---|---|---|---|---|
+| LightGBM + wind/solar/load (`src/lgbm.py`) | 2.192 / 2.097 / 2.358 | +$1,764 [176, 3,620] | +$327 [−878, 1,740] | +$594 [−2,124, 4,418] |
+| Chronos-2, price only, 2,048 h | 2.251 / 2.187 / 2.485 | +$1,051 | −$243 | −$2,109 [−4,146, −501] |
+| Hour-of-day baseline | 2.226 / 2.160 / 2.437 | +$654 | +$26 | +$231 |
+
+LightGBM (quantile regression, one model per quantile, all pairs pooled, retrained monthly on results known by then) has the best forecast in all three periods. Zero-shot Chronos-2 can't use the wind/solar/load inputs (its pinball got worse with them) and loses money out of sample. No model's test-period PnL is distinguishable from zero yet. Next: forecast misses on T−2, DAM shadow prices of the West Texas and Panhandle export constraints on T−1, and the outage forecast for T (`src/extra_data.py`), which reverses the "out of scope" line above for shadow prices and outages. Chronos-2 now uses 2,048 hours of history: on 2024 it scored the same as 8,192 hours and runs about 4× faster.
+
 ### 5.1 Alternative signals (stretch: only after the main comparison runs end to end)
 
 Simpler strategies that use the same trade, risk and evaluation engine. Each produces a direction and a size for each pair and hour, instead of quantiles. They test whether the foundation model is needed at all, and each is a plain rule that fits on one slide. In priority order:

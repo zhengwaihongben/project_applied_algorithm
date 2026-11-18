@@ -12,9 +12,12 @@ import time
 
 import pandas as pd
 from ercot.auth import ErcotAuth
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
-from config import DOWNLOAD_START, END, RAW_COV
+from config import DOWNLOAD_START, END, LOAD_FIELDS, PROCESSED, RAW_COV, SOLAR_FIELDS, WIND_FIELDS
 from data_import import fetch, month_ranges, with_retry
+
+COVARIATE_FILE = PROCESSED / "covariates.csv"
 
 ENDPOINTS = {
     "WIND": "/np4-742-cd/wpp_hrly_actual_fcast_geo",
@@ -50,6 +53,60 @@ def _params(day):
         "postedDatetimeFrom": (day - CUTOFF - LOOKBACK).strftime(fmt),
         "postedDatetimeTo": (day - CUTOFF).strftime(fmt),
     }
+
+
+def to_hour_ending(df):
+    """ERCOT deliveryDate + hourEnding (1-24, '1' or '01:00') + DSTFlag -> UTC hour ending.
+
+    Localize the hour *beginning* (always a real wall-clock time), then add 1h.
+    DSTFlag true marks the repeated fall-back hour, which is standard time.
+    """
+    he = df["hourEnding"].astype(str).str.split(":").str[0].astype(int)
+    begin = pd.to_datetime(df["deliveryDate"]) + pd.to_timedelta(he - 1, unit="h")
+    repeated = df["DSTFlag"].astype(str).str.upper().isin(["Y", "TRUE"]).to_numpy()
+    # The solar report labels the spring-forward gap as HE2 instead of HE3; at 2am solar is 0, so shift it.
+    local = begin.dt.tz_localize("America/Chicago", ambiguous=~repeated, nonexistent="shift_forward")
+    return (local + pd.Timedelta(hours=1)).dt.tz_convert("UTC")
+
+
+def calendar(hour_ending):
+    start = hour_ending.dt.tz_convert("America/Chicago") - pd.Timedelta(hours=1)
+    day = start.dt.tz_localize(None).dt.normalize()
+    holidays = USFederalHolidayCalendar().holidays(day.min(), day.max())
+    return pd.DataFrame({
+        "hour": start.dt.hour, "dow": start.dt.dayofweek, "month": start.dt.month,
+        "holiday": day.isin(holidays).astype(int),
+    }, index=hour_ending.index)
+
+
+def _hourly(kind, fields):
+    raw = pd.concat([pd.read_csv(f) for f in sorted(RAW_COV.glob(f"{kind}_*.csv"))], ignore_index=True)
+    out = raw.assign(hour_ending=to_hour_ending(raw)).rename(columns=fields)
+    cols = list(fields.values())
+    out[cols] = out[cols].apply(pd.to_numeric, errors="coerce")
+    return out.groupby("hour_ending")[cols].mean()
+
+
+def build_covariates():
+    """One row per UTC hour: each forecast as it stood at 10:00 the day before delivery, plus derived inputs."""
+    cov = pd.concat([_hourly("WIND", WIND_FIELDS), _hourly("SOLAR", SOLAR_FIELDS), _hourly("LOAD", LOAD_FIELDS)],
+                    axis=1).sort_index()
+    cov["net_load"] = cov["load_sys"] - cov["wind_sys"] - cov["solar_sys"]
+    # shortcut: proxy for power pushing out of the West (weather-zone sums, not ERCOT's load-zone mapping)
+    cov["west_surplus"] = (cov["wind_west"] + cov["wind_pan"] + cov["solar_farwest"] + cov["solar_cwest"]
+                           - cov["load_farwest"] - cov["load_west"])
+    cov = cov.rename_axis("hour_ending").reset_index()
+    PROCESSED.mkdir(parents=True, exist_ok=True)
+    cov.to_csv(COVARIATE_FILE, index=False)
+    print(cov.describe().T[["count", "mean", "min", "max"]].to_string())
+    print("first/last hour:", cov["hour_ending"].min(), cov["hour_ending"].max())
+    print("hours with any missing value:", int(cov.isna().any(axis=1).sum()), "of", len(cov))
+
+
+def load_covariates():
+    cov = pd.read_csv(COVARIATE_FILE)
+    cov["hour_ending"] = pd.to_datetime(cov["hour_ending"], utc=True)
+    return cov.set_index("hour_ending")
 
 
 def download_covariates():
@@ -90,4 +147,10 @@ def probe(day):
 
 
 if __name__ == "__main__":
-    probe(sys.argv[2]) if sys.argv[1:2] == ["probe"] else download_covariates()
+    cmd = sys.argv[1:2]
+    if cmd == ["probe"]:
+        probe(sys.argv[2])
+    elif cmd == ["build"]:
+        build_covariates()
+    else:
+        download_covariates()

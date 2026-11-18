@@ -7,3 +7,4 @@ data/raw/COV/
 data/processed/
 output/forecasts/
 .ipynb_checkpoints/
+.DS_Store
