@@ -11,8 +11,8 @@ CELLS = []
 
 
 def md(text):
-    # escape $ so Jupyter doesn't read "$15 ... $10" as a LaTeX formula
-    CELLS.append(nbf.v4.new_markdown_cell(text.strip().replace("$", r"\$")))
+    # write $ as an HTML entity so no viewer reads "$15 ... $10" as a LaTeX formula (some ignore "\$")
+    CELLS.append(nbf.v4.new_markdown_cell(text.strip().replace("$", "&#36;")))
 
 
 def code(text):
@@ -409,21 +409,98 @@ starting fresh in each period:
 - **Bid cap.** We never pay more than $25/MWh for the position.
 - **Size.** Half-Kelly (bigger when the model is more confident and its range is narrower), capped at **10 MW per
   hour** and **40 MW per day**. The most confident hours go first.
-- **Risk rules**, using only results known at bid time (T−2):
-  - a day that lost more than 2% → half size, more than 5% → no trading;
-  - a 15% drawdown → stop for good;
-  - a real-time price spike above $1,000 → half size (a proxy for extreme weather).
 - **Costs.** $0.50/MWh fee.
+
+### Risk management
+
+A PTP Obligation can't be closed early: once the auction clears, it is held until real-time settlement. So a
+classic **stop-loss or take-profit on a single position isn't possible**. Instead, risk is controlled before the bid
+(position limits) and between days (stops based on settled results, known at bid time on T−2):
+
+| Technique | Rule | Purpose |
+|---|---|---|
+| Position limit per hour | max 10 MW per hour | caps the damage of one extreme hour |
+| Position limit per day | max 40 MW per day, most confident hours first | caps daily exposure |
+| Half-Kelly sizing | size grows with confidence, then capped | bet more only when the model is surer |
+| Bid cap (price limit) | never pay more than $25/MWh | don't buy when the auction already prices extreme congestion |
+| Daily stop-loss | T−2 lost > 2% of equity → half size; > 5% → no trading | slow down after a bad day |
+| Drawdown stop | equity 15% below its peak → stop for good | strategy-level stop-loss |
+| Extreme-weather filter | any hub real-time price > $1,000 on T−2 → half size | trade smaller in stressed markets |
+
+How often each one actually acted in the backtest:
+""")
+
+code("""
+rows = []
+for m in MODELS:
+    for p in PERIODS:
+        d = pd.read_csv(OUTPUT / "backtest" / f"daily_{m}_{p}.csv")
+        t = pd.read_csv(OUTPUT / "backtest" / f"trades_{m}_{p}.csv")
+        rows.append({"model": LABELS[m], "period": p,
+                     "trades at 10 MW cap %": (t.mw == 10).mean() * 100,
+                     "bids rejected by $25 cap": int((~t.cleared).sum()),
+                     "days size halved": int((d.scale == 0.5).sum()),
+                     "days with no trading": int((d.scale == 0).sum()),
+                     "worst day % of capital": d.pnl.min() / 1e6 * 100,
+                     "max drawdown %": d.drawdown.min() * 100})
+pd.DataFrame(rows).set_index(["period", "model"]).sort_index().round(2)
+""")
+
+md("""
+**Reading this.**
+- **The position limits do the real work.** Every trade hits the 10 MW cap (half-Kelly always asks for more), and
+  the 40 MW/day budget keeps the worst day under 0.7% of capital.
+- **The stop-losses never triggered.** The worst day lost at most 0.7% (the stop starts at 2%) and the deepest
+  drawdown was under 1% (the stop is at 15%). At this size they're a safety net, not an active control.
+- **Only the weather filter acted**, halving size on 2–5 days per period after price spikes.
+- **The bid cap rarely binds:** at most 13 bids per period were rejected.
 """)
 
 code("""
 M = json.loads((OUTPUT / "metrics.json").read_text())["models"]
-table = pd.DataFrame([{"period": p, "model": v["label"], "PnL $": r["total_pnl"], "trades": r["trades"],
-                       "win rate": r["win_rate"], "max drawdown %": r["max_drawdown_pct"], "Sharpe": r["sharpe"],
-                       "Sharpe 95% interval": f"[{r['sharpe_ci'][0]:.2f}, {r['sharpe_ci'][1]:.2f}]"}
-                      for v in M.values() for p, r in v["periods"].items()]).set_index(["period", "model"])
-print(f"LightGBM breakeven fee (Test A + B): ${M['lgbm']['breakeven_cost']:.2f}/MWh")
-table.round(2)
+panels = [("total_pnl", "Total PnL ($)"), ("sharpe", "Sharpe ratio, with 95% interval"),
+          ("win_rate", "Win rate (% of trades)"), ("max_drawdown_pct", "Max drawdown (% of capital)")]
+fig, axes = plt.subplots(2, 2, figsize=(12, 6.5))
+x = np.arange(3)
+for ax, (key, title) in zip(axes.flat, panels):
+    for i, m in enumerate(M):
+        r = [M[m]["periods"][p] for p in PERIODS]
+        v = np.array([q[key] * (100 if key == "win_rate" else 1) for q in r])
+        err = None
+        if key == "sharpe":
+            err = [v - [q["sharpe_ci"][0] for q in r], [q["sharpe_ci"][1] for q in r] - v]
+        ax.bar(x + (i - 1) * 0.27, v, 0.25, color=COLORS[m], label=LABELS[m], yerr=err, capsize=3, ecolor="gray")
+    ax.axhline(50 if key == "win_rate" else 0, color="gray", lw=1)
+    ax.set_xticks(x, ["2024", "Test A", "Test B"]); ax.set_title(title)
+axes[1, 0].set_ylim(0, 80)
+axes[0, 0].legend(fontsize=8)
+fig.suptitle(r"Backtest results (\\$1M capital, \\$0.50/MWh fee)", fontweight="bold", y=1.01)
+fig.tight_layout()
+fig.savefig(FIG / "backtest_results.png", bbox_inches="tight", dpi=150); plt.show()
+""")
+
+md("""
+**Takeaways from the results chart.**
+- **Total PnL:** the 2024 leaders (Chronos-2, baseline) fade out of sample. LightGBM is the only model ahead in
+  Test A, and all three lose in Test B, after the market change.
+- **Sharpe:** every 95% interval crosses zero, so none of these results can be told apart from luck.
+- **Win rate:** about 60–67% in 2024, drifting to a coin flip (40–50%) in Test B. The in-sample edge doesn't carry over.
+- **Max drawdown:** under 1% of capital everywhere. The risk is small because the positions are small, not
+  because the strategy is safe.
+
+**Why did Chronos-2 and the baseline look so good in 2024, and fade afterwards?**
+- **2024 had a one-way bias.** The auction slightly underpriced West→North congestion almost all year: the median
+  error was positive in all 12 months, and about 63% of hours had a positive error. Simply buying West→North won.
+- **These two models rode that bias.** They extrapolate recent history, so they kept forecasting a positive error:
+  the baseline bought West→North on 100% of its trades, Chronos-2 on 97%. Their profit came mainly from the months
+  where the bias was strongest (January, March, April, June).
+- **In 2025 the bias faded** to about a coin flip (around 54% positive hours), but both models kept betting the same
+  direction, so they earned roughly nothing after fees. Why the bias faded we can't prove; more traders competing
+  for it and grid changes in the West are plausible reasons.
+- **LightGBM adapted better.** It was weaker in early 2024 (little training data, since our history starts in
+  December 2023), but it learned to bet both ways: only 64% of its Test A trades bought West→North. That's why it's
+  the only model ahead in Test A.
+- **Lesson:** in-sample results can reward a lucky market regime, not skill.
 """)
 
 code("""
@@ -438,14 +515,14 @@ fig.savefig(FIG / "equity_curves.png", bbox_inches="tight", dpi=150); plt.show()
 """)
 
 md("""
-**Results.**
-- Positions are small (at most 40 MW a day), so returns are under 1% of capital either way.
-- **2024 (in-sample):** Chronos-2 and the baseline look best.
-- **Test A:** the order flips. LightGBM is the only model that makes money.
-- **Test B (new market):** all three models lose. One bad hour (17 Sep 2026, −$3,700) causes most of LightGBM's
-  loss, which shows how a few extreme hours decide the result.
-- Every interval contains 0, so no result can be told apart from luck (see the robustness check below).
-- LightGBM's breakeven fee is about $0.31/MWh, below the $0.50 we assume.
+**Takeaways from the equity curves.**
+- **Profit comes in jumps, not a steady climb.** Most of each year's result is made or lost in a few short episodes;
+  flat stretches are days where the entry rule didn't fire.
+- **2024:** Chronos-2 and the baseline make nearly all their profit between March and July, then go flat.
+- **Test A:** LightGBM's lead comes mostly from one jump around May.
+- **Test B:** LightGBM was up about $4,000 in March, slid back towards zero, then crashed in September. One hour
+  on 17 Sep 2026 lost $3,700, which shows how a few extreme hours decide the result.
+- **Costs:** LightGBM's breakeven fee is about $0.31/MWh, below the $0.50 we assume.
 """)
 
 md("""
@@ -486,6 +563,18 @@ md("""
 - **Trading doesn't, yet.** After fees, the edge is too small and too noisy to tell from luck. The day-ahead
   auction already prices the public information well. What remains is mostly real-time surprises (plant
   failures, sudden wind drops) that can't be known the day before.
+- **We compete with the auction using the same public data.** The day-ahead price is itself a forecast, made by
+  many professional traders who see the same ERCOT wind, solar and load forecasts and the same price history we use.
+  To beat it with the same inputs, we'd need a much smarter model that extracts insights the whole market misses.
+  The realistic alternative is **better data**: more accurate weather and wind forecasts, proprietary congestion and
+  transmission-outage models, faster information. That data comes from paid commercial providers, which we don't
+  have access to. With public data only, a small, noisy edge is what we should expect, and it's what we found.
+- **A few hours decide the result, so luck is hard to rule out.** The error has fat tails: about 0.6% of hours
+  (errors above $50) make up 11% of all the error, and a single hour can outweigh months of small gains (17 Sep 2026
+  alone lost $3,700 of LightGBM's −$4,566 in Test B). Profit therefore depends on being on the right side of a
+  handful of extreme hours, and our models predict *when* the market is volatile much better than *which way* it
+  breaks. With so few decisive events per year, the confidence intervals stay wide and we can't separate skill
+  from luck.
 - **The market change matters.** Every model lost money after RTC+B, where the error became more volatile. One
   tuning year from before the change isn't enough.
 - **In-sample results mislead.** The best model on 2024 (Chronos-2) was the worst out of sample, which is why we
