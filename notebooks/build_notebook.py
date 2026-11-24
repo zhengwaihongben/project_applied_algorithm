@@ -3,6 +3,7 @@
     uv run python notebooks/build_notebook.py
     uv run jupyter nbconvert --to notebook --execute --inplace notebooks/ptp_findings.ipynb
 """
+import re
 from pathlib import Path
 
 import nbformat as nbf
@@ -11,8 +12,12 @@ CELLS = []
 
 
 def md(text):
-    # write $ as an HTML entity so no viewer reads "$15 ... $10" as a LaTeX formula (some ignore "\$")
-    CELLS.append(nbf.v4.new_markdown_cell(text.strip().replace("$", "&#36;")))
+    # No "$" in markdown: GitHub, Jupyter and PyCharm each read "$15 ... $10" as a LaTeX formula, and each ignores a
+    # different escape. So amounts are written as "15 USD" instead.
+    text = text.replace("$2/$3/$5", "2, 3 or 5 USD").replace("$Y", "Y USD")
+    text = re.sub(r"\$(\d(?:[\d,]*\d)?(?:\.\d+)?)(M\b)?", lambda m: f"{m[1]}{m[2] or ''} USD", text)
+    assert "$" not in text, text
+    CELLS.append(nbf.v4.new_markdown_cell(text.strip()))
 
 
 def code(text):
