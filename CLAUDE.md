@@ -4,39 +4,87 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-University group project (Applied Algorithmic Trading): trade ERCOT (Texas grid) congestion via **PTP Obligations**, source `HB_WEST` → sink `HB_NORTH`. Predict tomorrow's Real-Time (RTM) spread, compare with the Day-Ahead (DAM) spread, trade when the edge is large enough, then backtest. Deliverables are a deck (`resources/texas_congestion_pitch.pptx`) and commented code (ideally a Jupyter notebook) emailed to the professor.
+University group project (Applied Algorithmic Trading): trade ERCOT (Texas grid) congestion with **PTP Obligations** on HB_WEST → HB_NORTH. We forecast the day-ahead auction's error (`error = RT gap − DA gap`, gap = North − West), trade when the forecast is confident enough, and backtest the result.
 
-Key docs (read before changing strategy or data code):
-- `docs/project_idea.md`: strategy outline (features: historical congestion, West wind forecast, North load forecast, line outages).
-- `data_loading.md`: workflow checklist (in Chinese) with the **concrete strategy rules**, and ERCOT data portal instructions plus column schemas.
+Deliverables:
+- the deck, `resources/texas_congestion_pitch.pptx`;
+- the findings notebook, `notebooks/ptp_findings.ipynb`.
 
-Strategy rules from `data_loading.md` (the grading requires code to match the slides exactly):
-- Edge = predicted RT gap − DA gap. Enter West→North if edge > $5/MWh, reverse if < −$5/MWh; hold to next-day settlement.
-- Sizing: half-Kelly, capped at 10 MW/hour and 40 MW/day.
-- Risk: bid cap $25/MWh; daily stop (prior-day loss > 2% → halve size, > 5% → no trading); strategy stop at 15% drawdown; extreme-weather filter.
-- Backtest PnL = (RT spread − DA spread) × MW, minus ~$0.5/MWh cost. Avoid look-ahead bias.
+Key docs (read these before changing strategy or data code):
+- `docs/superpowers/specs/2026-11-13-ptp-strategy-design.md`: the source of truth for the rules, data, models and evaluation. Its §0 summarises what is built.
+- `docs/project_idea.md`: the original strategy outline.
+- `README.md`: setup, ERCOT credentials, and the commands for every pipeline step.
 
-## Environment & commands
+## Current implementation
 
-- Python ≥ 3.13, local `.venv/` (PyCharm virtualenv, currently empty). `pyproject.toml` declares **no dependencies** yet, though the code needs `pandas` and an `ercot` package. Record any new deps there.
-- No tests, linter, or build step exist.
-- Script paths resolve from `__file__`, so the cwd doesn't matter:
-  - `python src/data_ingestion.py`: dry run that previews renames of raw ERCOT downloads.
-  - `python src/data_ingestion.py --apply`: performs the renames.
-  - `python src/data_import.py`: downloads DAM/RTM for `HB_WEST`/`HB_NORTH` over the hard-coded `START_DATE`/`END_DATE`.
+- **Main model.** LightGBM quantile regression in `src/lgbm.py`, model `lgbm_cov`. Inputs:
+  - lagged errors and DA gaps;
+  - the calendar;
+  - wind, solar and load forecasts.
 
-## Data pipeline
+  One model per quantile, retrained monthly.
+- **Comparisons.**
+  - Chronos-2 zero-shot with 2,048 hours of history.
+  - An hour-of-day baseline: trailing 90-day quantiles.
 
-Layout: `data/raw/{DAM,RTM}` → `data/processed/` (planned). There are two ingestion paths, and their file naming conflicts:
+  Both live in `src/compare_models.py`.
+- **Backtest** (`src/backtest.py`):
+  - the gate (θ, α) is tuned on 2024 only, then frozen; the chosen setting is θ=$2, α=0.5 for every model;
+  - $25 bid cap;
+  - half-Kelly sizing, capped at 10 MW/hour and 40 MW/day;
+  - a daily stop based on T−2 PnL (above 2% → half size, above 5% → no bids);
+  - a permanent stop at 15% drawdown;
+  - a weather filter: any RT price above $1,000 on T−2 → half size;
+  - a $0.50/MWh fee and $1M capital, with each period starting fresh;
+  - 95% confidence intervals from a 7-day block bootstrap.
+- **Periods** (`src/config.py`):
+  - 2024: tuning (in-sample).
+  - Test A: 2025-01-01 → 2025-12-04.
+  - Test B: 2025-12-05 → 2026-10-31, after RTC+B went live.
+- **Finding.** No model's out-of-sample Sharpe interval excludes zero. See `output/metrics.json` and the notebook.
 
-1. **API download** (`src/data_import.py`, via `ercot` lib): writes `DAM_{point}_{start}_{end}.csv` in **wide** format (`date, settlement_point, HE1..HE24`, hourly) and RTM in **long** format (15-minute intervals, which must be aggregated to hourly before comparing with DAM). The committed January 2026 sample in `data/raw/DAM/` came from this path.
-2. **Manual portal download** (`src/data_ingestion.py`): renames ERCOT files prefixed `cdr*` (DAM, daily) → `DAM_YYYY-MM-DD.csv` and `rpt*` (RTM, yearly xlsx) → `RTM_YYYY.xlsx`. It never overwrites existing files.
+## Timing rule (never break it)
 
-Gotchas:
-- DST: DAM has `DSTFlag` and RTM has `Repeated Hour Flag`. Handle the duplicated or missing hour when aligning DAM and RTM.
-- `data_loading.md` refers to `src/data_processing.py` (filter to the hubs and write to `data/processed/`) and to `data_imports.py`. Neither exists yet; the actual file is `data_import.py`.
-- `src/data_import.py` reads `ERCOT_USERNAME`, `ERCOT_PASSWORD`, `ERCOT_SUBSCRIPTION_KEY` from the environment. Never commit real credentials.
+Bids for delivery day T are submitted at **10:00 on T−1**. The code may only use:
+- RT prices up to the end of T−2;
+- DA prices up to T−1;
+- forecasts published before 10:00 on T−1;
+- PnL settled up to T−2, for the risk rules.
+
+Tests check this.
+
+## Environment and commands
+
+- Python 3.13 (not 3.14), managed with `uv`. Record dependencies in `pyproject.toml`.
+- `uv run pytest`: all tests live in `tests/`; `pythonpath = src`.
+- Every script resolves paths from `__file__`, so it doesn't matter which directory you run from. The pipeline steps are listed in `README.md`.
+- To rebuild the notebook:
+
+  ```
+  uv run python notebooks/build_notebook.py && uv run jupyter nbconvert --to notebook --execute --inplace notebooks/ptp_findings.ipynb
+  ```
+
+  Edit `build_notebook.py`, never the `.ipynb` directly.
+- Notebook markdown must not contain `$`: GitHub, Jupyter and PyCharm render pairs of `$` as LaTeX. The `md()` helper rewrites amounts as "USD" and asserts that no `$` is left.
+
+## Data
+
+- `data/raw/{DAM,RTM,COV,...}` holds the monthly downloads, and `data/processed/` the hourly tables. Both are gitignored and regenerated by the scripts.
+- `output/` is committed and holds:
+  - the forecasts;
+  - `metrics.json`;
+  - the backtest logs;
+  - the figures.
+- DST: the fall-back hour appears twice. `lgbm.features` averages it into one row.
+- Credentials: `ERCOT_USERNAME`, `ERCOT_PASSWORD` and `ERCOT_SUBSCRIPTION_KEY`, read from the environment only. Never print them, write them to disk or commit them.
+- `src/data_processing.py` and `docs/data_pipeline.md` are an early teammate pipeline and are not used by the current code.
 
 ## ERCOT Public API
 
-`resources/ercot_pubapi.yaml` is the full OpenAPI spec (base URL `https://api.ercot.com/api/public-reports`, about 245 report endpoints). Subscription-key examples in it are redacted. Useful endpoints: `/np4-190-cd/dam_stlmnt_pnt_prices` (DAM prices), `/np6-905-cd/spp_node_zone_hub` (RTM 15-minute prices). Each request needs an `Ocp-Apim-Subscription-Key` header and a Bearer ID token; the token comes from ERCOT's B2C ROPC login and expires after 1 hour with no refresh, so long downloads must re-authenticate.
+`resources/ercot_pubapi.yaml` is the full OpenAPI spec. The base URL is `https://api.ercot.com/api/public-reports`.
+
+Each request needs:
+- an `Ocp-Apim-Subscription-Key` header;
+- a Bearer ID token.
+
+The token comes from a B2C ROPC login and expires after 1 hour. `data_import.fetch` uses the `ercot` package's `ErcotAuth` to refresh it.
