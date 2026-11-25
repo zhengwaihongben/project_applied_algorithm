@@ -247,8 +247,7 @@ md("""
   real weeks at random (some twice, some not at all). The middle 95% of those totals is the interval. If it
   contains 0, we can't tell the profit from luck.
   - *Doesn't this break seasons and weather?* No. Each week keeps its real weather and the real trades the model
-    made for it; only which weeks get counted changes. The order of weeks doesn't matter for a total. A version that
-    only swaps weeks within the same season gives the same result (section 4).
+    made for it; only which weeks get counted changes. The order of weeks doesn't matter for a total.
 """)
 
 code("""
@@ -528,36 +527,6 @@ md("""
 - **Test B:** LightGBM was up about $4,000 in March, slid back towards zero, then crashed in September. One hour
   on 17 Sep 2026 lost $3,700, which shows how a few extreme hours decide the result.
 - **Costs:** LightGBM's breakeven fee is about $0.31/MWh, below the $0.50 we assume.
-""")
-
-md("""
-**Robustness check of the luck test.** The 95% interval of total backtest PnL, computed four ways: 7-, 14- and
-28-day blocks, and 7-day blocks swapped only within the same quarter (so each fake year keeps the real season mix).
-""")
-
-code("""
-def seasonal_bootstrap(x, dates, n=5000):
-    q = pd.DatetimeIndex(dates).quarter.to_numpy()   # resample each quarter separately, then add up
-    return sum(block_bootstrap(x[q == k], n, seed=int(k)).sum(1) for k in np.unique(q))
-
-rows = []
-for m in M:
-    for p in PERIODS:
-        d = pd.read_csv(OUTPUT / "backtest" / f"daily_{m}_{p}.csv")
-        x = d.pnl.to_numpy()
-        r = {"model": LABELS[m], "period": p, "total $": round(x.sum())}
-        for name, totals in [("7-day", block_bootstrap(x).sum(1)), ("14-day", block_bootstrap(x, block=14).sum(1)),
-                             ("28-day", block_bootstrap(x, block=28).sum(1)),
-                             ("7-day, same quarter", seasonal_bootstrap(x, d.delivery_date))]:
-            lo, hi = np.percentile(totals, [2.5, 97.5])
-            r[name] = f"[{lo:,.0f}, {hi:,.0f}]"
-        rows.append(r)
-pd.DataFrame(rows).set_index(["period", "model"]).sort_index()
-""")
-
-md("""
-All four methods give nearly the same ranges, and every interval contains 0. The "not distinguishable from luck"
-conclusion does not depend on how we resample.
 """)
 
 md("""
