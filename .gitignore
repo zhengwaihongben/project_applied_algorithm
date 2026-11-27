@@ -4,7 +4,10 @@ __pycache__/
 .idea/
 data/raw/*/*_hubs_*.csv
 data/raw/COV/
-data/processed/
+data/processed/*
+# public ERCOT data the notebook needs, so it runs without ERCOT credentials
+!data/processed/hourly_prices.csv
+!data/processed/covariates.csv
 output/forecasts/
 .ipynb_checkpoints/
 .DS_Store
