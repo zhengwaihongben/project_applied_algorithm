@@ -25,6 +25,19 @@ uv sync                 # installs everything: Chronos-2, TimesFM, TabPFN-TS, Py
 uv run pytest -v        # all tests should pass
 ```
 
+## Reproduce the results without ERCOT credentials
+
+Everything the notebook reads is committed: hourly hub prices and the wind/solar/load forecasts (`data/processed/hourly_prices.csv`, `data/processed/covariates.csv`, both public ERCOT data), the model forecasts (`output/forecasts/`), the backtest logs (`output/backtest/`) and `output/metrics.json`. So no ERCOT account or VPN is needed to check our work:
+
+```bash
+uv sync
+uv run python notebooks/build_notebook.py
+uv run jupyter nbconvert --to notebook --execute --inplace notebooks/ptp_findings.ipynb
+uv run python src/backtest.py      # optional: rerun the backtest from the committed forecasts
+```
+
+Credentials are only needed to re-download data from ERCOT (next section).
+
 ## Access to ERCOT
 
 ### Connect to a US VPN first
