@@ -8,6 +8,14 @@ data/processed/*
 # public ERCOT data the notebook needs, so it runs without ERCOT credentials
 !data/processed/hourly_prices.csv
 !data/processed/covariates.csv
-output/forecasts/
+output/forecasts/*
+!output/forecasts/compare/
+output/forecasts/compare/*
+# forecasts the notebook and backtest read, so results reproduce without rerunning the models
+!output/forecasts/compare/lgbm_cov_monthly*.csv
+!output/forecasts/compare/lgbm_lags_monthly*.csv
+!output/forecasts/compare/chronos_ctx2048_WEST-NORTH*.csv
+!output/forecasts/compare/baseline_ctx2160.csv
+!output/forecasts/compare/baseline_ctx2160_WEST-NORTH_test_*.csv
 .ipynb_checkpoints/
 .DS_Store
